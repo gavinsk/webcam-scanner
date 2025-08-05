@@ -2,16 +2,34 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Manual Warp Crop)</title>
+<title>Webcam to PDF Scanner (Manual Warp Crop + Sticky Buttons)</title>
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
   video { border: 2px solid #333; border-radius: 4px; }
   button { margin: 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
   .thumb-container { display: inline-block; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; }
   .thumb-container img { display: block; height: 120px; margin-bottom: 5px; border: 1px solid #ccc; }
-  #cropModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-               background: rgba(0,0,0,0.85); justify-content: center; align-items: center; flex-direction: column; }
-  #cropCanvas { background: white; cursor: crosshair; }
+  #cropModal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    overflow: auto;
+    padding: 20px;
+  }
+  #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; }
+  .button-bar {
+    position: sticky;
+    bottom: 0;
+    background: rgba(0,0,0,0.85);
+    padding: 10px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+  }
 </style>
 </head>
 <body>
@@ -24,9 +42,11 @@
 
 <!-- Crop Modal -->
 <div id="cropModal">
-  <canvas id="cropCanvas"></canvas><br>
-  <button id="applyCrop">✅ Apply Crop</button>
-  <button id="cancelCrop">❌ Cancel</button>
+  <canvas id="cropCanvas"></canvas>
+  <div class="button-bar">
+    <button id="applyCrop">✅ Apply Crop</button>
+    <button id="cancelCrop">❌ Cancel</button>
+  </div>
 </div>
 
 <!-- OpenCV.js -->
@@ -142,7 +162,7 @@
     cropCanvas.height = imgObj.height;
     cropCtx.drawImage(imgObj.imageElement, 0, 0);
 
-    // Initialize points 10% in from each edge
+    // Initialize points
     points = [
       {x: imgObj.width * 0.1, y: imgObj.height * 0.1}, // top-left
       {x: imgObj.width * 0.9, y: imgObj.height * 0.1}, // top-right
@@ -246,7 +266,6 @@
       return;
     }
     const { jsPDF } = window.jspdf;
-    const first = capturedImages[0];
     const pdf = new jsPDF({
       orientation: "portrait",
       unit: "px",
