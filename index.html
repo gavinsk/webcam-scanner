@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Quality Toggle)</title>
+<title>Webcam to PDF Scanner (Max Camera Resolution)</title>
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
   video { border: 2px solid #333; border-radius: 4px; }
@@ -31,7 +31,6 @@
     gap: 10px;
     justify-content: center;
   }
-  /* Preview Modal */
   #previewModal {
     display:none; position:fixed; inset:0;
     background: rgba(0,0,0,0.9);
@@ -55,7 +54,7 @@
 <video id="video" autoplay playsinline></video><br>
 <label for="qualitySelect">PDF Quality:</label>
 <select id="qualitySelect">
-  <option value="high" selected>High (2550×3300)</option>
+  <option value="high" selected>High (Camera Max Resolution)</option>
   <option value="standard">Standard (850×1100)</option>
 </select>
 <button id="captureBtn">📷 Capture Page</button>
@@ -77,7 +76,6 @@
   <button id="closePreview">❌ Close</button>
 </div>
 
-<!-- OpenCV.js -->
 <script async src="https://docs.opencv.org/4.x/opencv.js"
         onload="cv['onRuntimeInitialized']=()=>{window.cvReady=true;}"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -107,15 +105,22 @@
   let points = [];
   let draggingPoint = null;
 
+  let camMaxWidth = 1920; // will update after cam starts
+  let camMaxHeight = 1080;
+
   // Preview zoom/pan
   let scale = 1, isPanning = false, startX, startY, originX = 0, originY = 0;
 
-  // Start webcam
+  // Start webcam at max resolution
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 } }
+      video: { width: { ideal: 9999 }, height: { ideal: 9999 } }
     });
     video.srcObject = stream;
+    await new Promise(res => video.onloadedmetadata = res);
+    camMaxWidth = video.videoWidth;
+    camMaxHeight = video.videoHeight;
+    console.log(`Camera max resolution detected: ${camMaxWidth}×${camMaxHeight}`);
   } catch (err) {
     alert("Error accessing webcam: " + err);
     return;
@@ -123,7 +128,7 @@
 
   function getOutputSize(){
     return (qualitySelect.value === "high")
-      ? {w: 2550, h: 3300}
+      ? {w: camMaxWidth, h: camMaxHeight}
       : {w: 850, h: 1100};
   }
 
@@ -314,7 +319,7 @@
     pdf.save("scan.pdf");
   };
 
-  // ==== Preview Modal Logic ====
+  // Preview Modal Logic
   function openPreview(src){
     previewImage.src = src;
     scale = 1;
