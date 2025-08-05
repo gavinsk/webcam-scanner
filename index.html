@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Max Camera Resolution)</title>
+<title>Webcam to PDF Scanner (Option A - Mixed Page Sizes)</title>
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
   video { border: 2px solid #333; border-radius: 4px; }
@@ -54,7 +54,7 @@
 <video id="video" autoplay playsinline></video><br>
 <label for="qualitySelect">PDF Quality:</label>
 <select id="qualitySelect">
-  <option value="high" selected>High (Camera Max Resolution)</option>
+  <option value="high" selected>High (Camera Max Resolution / Crop Actual)</option>
   <option value="standard">Standard (850×1100)</option>
 </select>
 <button id="captureBtn">📷 Capture Page</button>
@@ -105,7 +105,7 @@
   let points = [];
   let draggingPoint = null;
 
-  let camMaxWidth = 1920; // will update after cam starts
+  let camMaxWidth = 1920; 
   let camMaxHeight = 1080;
 
   // Preview zoom/pan
@@ -124,12 +124,6 @@
   } catch (err) {
     alert("Error accessing webcam: " + err);
     return;
-  }
-
-  function getOutputSize(){
-    return (qualitySelect.value === "high")
-      ? {w: camMaxWidth, h: camMaxHeight}
-      : {w: 850, h: 1100};
   }
 
   function renderThumbnails(){
@@ -185,14 +179,23 @@
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
-    const imgData = canvas.toDataURL('image/jpeg', 1.0);
+    let targetWidth = (qualitySelect.value === "standard") ? 850 : camMaxWidth;
+    let targetHeight = (qualitySelect.value === "standard") ? 1100 : camMaxHeight;
+
+    // Scale down if needed
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = targetWidth;
+    tempCanvas.height = targetHeight;
+    tempCanvas.getContext('2d').drawImage(canvas, 0, 0, targetWidth, targetHeight);
+
+    const imgData = tempCanvas.toDataURL('image/jpeg', 1.0);
     const imgElement = new Image();
     imgElement.src = imgData;
     imgElement.onload = () => {
       capturedImages.push({
         data: imgData,
-        width: canvas.width,
-        height: canvas.height,
+        width: tempCanvas.width,
+        height: tempCanvas.height,
         imageElement: imgElement
       });
       renderThumbnails();
@@ -262,7 +265,16 @@
 
   applyCropBtn.onclick = () => {
     const imgObj = capturedImages[croppingIndex];
-    const size = getOutputSize();
+    let dstW, dstH;
+    if (qualitySelect.value === "standard") {
+      dstW = 850;
+      dstH = 1100;
+    } else {
+      // Crop's own size
+      dstW = Math.round(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+      dstH = Math.round(Math.hypot(points[3].x - points[0].x, points[3].y - points[0].y));
+    }
+
     const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
       points[0].x, points[0].y,
       points[1].x, points[1].y,
@@ -271,23 +283,24 @@
     ]);
     const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
       0, 0,
-      size.w - 1, 0,
-      size.w - 1, size.h - 1,
-      0, size.h - 1
+      dstW - 1, 0,
+      dstW - 1, dstH - 1,
+      0, dstH - 1
     ]);
+
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
     const srcMat = cv.imread(imgObj.imageElement);
     const dst = new cv.Mat();
-    cv.warpPerspective(srcMat, dst, M, new cv.Size(size.w, size.h));
+    cv.warpPerspective(srcMat, dst, M, new cv.Size(dstW, dstH));
 
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = size.w;
-    tempCanvas.height = size.h;
+    tempCanvas.width = dstW;
+    tempCanvas.height = dstH;
     cv.imshow(tempCanvas, dst);
 
     imgObj.data = tempCanvas.toDataURL('image/jpeg', 1.0);
-    imgObj.width = size.w;
-    imgObj.height = size.h;
+    imgObj.width = dstW;
+    imgObj.height = dstH;
     imgObj.imageElement = new Image();
     imgObj.imageElement.src = imgObj.data;
     imgObj.imageElement.onload = renderThumbnails;
@@ -296,30 +309,31 @@
     cropModal.style.display = "none";
   };
 
-  cancelCropBtn.onclick = () => {
-    cropModal.style.display = "none";
-  };
+  cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
 
   downloadBtn.onclick = () => {
     if (!capturedImages.length) {
       alert("No pages captured!");
       return;
     }
-    const size = getOutputSize();
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({
-      orientation: "portrait",
-      unit: "px",
-      format: [size.w, size.h]
-    });
+    let pdf = null;
+
     capturedImages.forEach((img, index) => {
-      if (index > 0) pdf.addPage([size.w, size.h], "portrait");
-      pdf.addImage(img.data, 'JPEG', 0, 0, size.w, size.h);
+      if (index === 0) {
+        pdf = new jsPDF({
+          orientation: img.width > img.height ? "landscape" : "portrait",
+          unit: "px",
+          format: [img.width, img.height]
+        });
+      } else {
+        pdf.addPage([img.width, img.height], img.width > img.height ? "landscape" : "portrait");
+      }
+      pdf.addImage(img.data, 'JPEG', 0, 0, img.width, img.height);
     });
     pdf.save("scan.pdf");
   };
 
-  // Preview Modal Logic
   function openPreview(src){
     previewImage.src = src;
     scale = 1;
