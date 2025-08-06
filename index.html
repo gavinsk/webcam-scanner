@@ -2,13 +2,42 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Option A - Mixed Page Sizes)</title>
+<title>Webcam to PDF Scanner (Mobile Friendly)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
-  video { border: 2px solid #333; border-radius: 4px; }
-  button, select { margin: 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
-  .thumb-container { display: inline-block; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; }
-  .thumb-container img { display: block; height: 120px; margin-bottom: 5px; border: 1px solid #ccc; cursor: pointer; }
+  body {
+    font-family: sans-serif;
+    text-align: center;
+    margin: 20px;
+    background: #f4f4f4;
+  }
+  video {
+    border: 2px solid #333;
+    border-radius: 4px;
+    max-width: 100%;
+    height: auto;
+  }
+  button, select {
+    margin: 5px;
+    padding: 8px 12px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .thumb-container {
+    display: inline-block;
+    text-align: center;
+    margin: 5px;
+    background: white;
+    padding: 5px;
+    border-radius: 4px;
+  }
+  .thumb-container img {
+    display: block;
+    height: 120px;
+    margin-bottom: 5px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+  }
   #cropModal {
     display: none;
     position: fixed;
@@ -21,7 +50,12 @@
     padding: 20px;
     z-index: 2000;
   }
-  #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; }
+  #cropCanvas {
+    background: white;
+    cursor: crosshair;
+    max-width: 95%;
+    height: auto;
+  }
   .button-bar {
     position: sticky;
     bottom: 0;
@@ -32,19 +66,28 @@
     justify-content: center;
   }
   #previewModal {
-    display:none; position:fixed; inset:0;
+    display:none;
+    position:fixed;
+    inset:0;
     background: rgba(0,0,0,0.9);
-    justify-content:center; align-items:center; z-index:3000;
+    justify-content:center;
+    align-items:center;
+    z-index:3000;
   }
   #previewImage {
-    max-width:90%; max-height:90%;
+    max-width:90%;
+    max-height:90%;
     transform-origin: center center;
     transition: transform 0.2s ease;
     cursor: grab;
   }
   #closePreview {
-    position:absolute; top:20px; right:20px;
-    padding:8px 12px; font-size:16px; cursor:pointer;
+    position:absolute;
+    top:20px;
+    right:20px;
+    padding:8px 12px;
+    font-size:16px;
+    cursor:pointer;
   }
 </style>
 </head>
@@ -111,20 +154,27 @@
   // Preview zoom/pan
   let scale = 1, isPanning = false, startX, startY, originX = 0, originY = 0;
 
-  // Start webcam at max resolution
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 9999 }, height: { ideal: 9999 } }
-    });
-    video.srcObject = stream;
-    await new Promise(res => video.onloadedmetadata = res);
-    camMaxWidth = video.videoWidth;
-    camMaxHeight = video.videoHeight;
-    console.log(`Camera max resolution detected: ${camMaxWidth}×${camMaxHeight}`);
-  } catch (err) {
-    alert("Error accessing webcam: " + err);
-    return;
+  // Start webcam preferring rear camera
+  async function startCamera() {
+    try {
+      const constraints = {
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 9999 },
+          height: { ideal: 9999 }
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      await new Promise(res => video.onloadedmetadata = res);
+      camMaxWidth = video.videoWidth;
+      camMaxHeight = video.videoHeight;
+      console.log(`Camera max resolution detected: ${camMaxWidth}×${camMaxHeight}`);
+    } catch (err) {
+      alert("Error accessing camera: " + err);
+    }
   }
+  await startCamera();
 
   function renderThumbnails(){
     thumbnails.innerHTML = "";
@@ -179,10 +229,10 @@
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
+
     let targetWidth = (qualitySelect.value === "standard") ? 850 : camMaxWidth;
     let targetHeight = (qualitySelect.value === "standard") ? 1100 : camMaxHeight;
 
-    // Scale down if needed
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = targetWidth;
     tempCanvas.height = targetHeight;
@@ -270,7 +320,6 @@
       dstW = 850;
       dstH = 1100;
     } else {
-      // Crop's own size
       dstW = Math.round(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
       dstH = Math.round(Math.hypot(points[3].x - points[0].x, points[3].y - points[0].y));
     }
