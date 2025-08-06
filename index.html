@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Mobile Friendly)</title>
+<title>Webcam to PDF Scanner (Mobile Friendly with Flip Camera)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body {
@@ -102,6 +102,7 @@
 </select>
 <button id="captureBtn">📷 Capture Page</button>
 <button id="downloadBtn">💾 Download PDF</button>
+<button id="flipBtn" style="display:none;">🔄 Flip Camera</button>
 <div id="thumbnails"></div>
 
 <!-- Crop Modal -->
@@ -128,18 +129,17 @@
   const video = document.getElementById('video');
   const captureBtn = document.getElementById('captureBtn');
   const downloadBtn = document.getElementById('downloadBtn');
+  const flipBtn = document.getElementById('flipBtn');
   const thumbnails = document.getElementById('thumbnails');
   const qualitySelect = document.getElementById('qualitySelect');
   const capturedImages = [];
 
-  // Crop modal
   const cropModal = document.getElementById('cropModal');
   const cropCanvas = document.getElementById('cropCanvas');
   const cropCtx = cropCanvas.getContext('2d');
   const applyCropBtn = document.getElementById('applyCrop');
   const cancelCropBtn = document.getElementById('cancelCrop');
 
-  // Preview modal
   const previewModal = document.getElementById('previewModal');
   const previewImage = document.getElementById('previewImage');
   const closePreview = document.getElementById('closePreview');
@@ -150,16 +150,15 @@
 
   let camMaxWidth = 1920; 
   let camMaxHeight = 1080;
+  let currentFacingMode = "environment"; // start with rear if possible
 
-  // Preview zoom/pan
   let scale = 1, isPanning = false, startX, startY, originX = 0, originY = 0;
 
-  // Start webcam preferring rear camera
-  async function startCamera() {
+  async function startCamera(facingMode = "environment") {
     try {
       const constraints = {
         video: {
-          facingMode: { ideal: "environment" },
+          facingMode: { ideal: facingMode },
           width: { ideal: 9999 },
           height: { ideal: 9999 }
         }
@@ -169,12 +168,28 @@
       await new Promise(res => video.onloadedmetadata = res);
       camMaxWidth = video.videoWidth;
       camMaxHeight = video.videoHeight;
-      console.log(`Camera max resolution detected: ${camMaxWidth}×${camMaxHeight}`);
+      console.log(`Camera started (${facingMode}) at ${camMaxWidth}×${camMaxHeight}`);
     } catch (err) {
-      alert("Error accessing camera: " + err);
+      console.error("Error accessing camera:", err);
     }
   }
-  await startCamera();
+
+  // Detect multiple cameras
+  async function checkCameraCount() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === "videoinput");
+    if (videoInputs.length > 1) {
+      flipBtn.style.display = "inline-block";
+    }
+  }
+
+  flipBtn.onclick = async () => {
+    currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+    await startCamera(currentFacingMode);
+  };
+
+  await checkCameraCount();
+  await startCamera(currentFacingMode);
 
   function renderThumbnails(){
     thumbnails.innerHTML = "";
