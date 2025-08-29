@@ -2,107 +2,54 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Mobile Friendly with Flip Camera)</title>
+<title>Webcam to PDF Scanner (Reliable Preview + Fallbacks)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body {
-    font-family: sans-serif;
-    text-align: center;
-    margin: 20px;
-    background: #f4f4f4;
-  }
+  body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
+  #videoWrap { display:inline-block; max-width: 100%; }
   video {
-    border: 2px solid #333;
-    border-radius: 4px;
-    max-width: 100%;
-    height: auto;
+    border: 2px solid #333; border-radius: 4px;
+    width: auto; height: auto; max-width: 100%;
+    object-fit: contain; /* preserve full FOV */
+    display: block; margin: 0 auto;
   }
-  button, select {
-    margin: 5px;
-    padding: 8px 12px;
-    font-size: 14px;
-    cursor: pointer;
-  }
-  .thumb-container {
-    display: inline-block;
-    text-align: center;
-    margin: 5px;
-    background: white;
-    padding: 5px;
-    border-radius: 4px;
-  }
-  .thumb-container img {
-    display: block;
-    height: 120px;
-    margin-bottom: 5px;
-    border: 1px solid #ccc;
-    cursor: pointer;
-  }
-  #cropModal {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.85);
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    overflow: auto;
-    padding: 20px;
-    z-index: 2000;
-  }
-  #cropCanvas {
-    background: white;
-    cursor: crosshair;
-    max-width: 95%;
-    height: auto;
-  }
-  .button-bar {
-    position: sticky;
-    bottom: 0;
-    background: rgba(0,0,0,0.85);
-    padding: 10px;
-    display: flex;
-    gap: 10px;
-    justify-content: center;
-  }
-  #previewModal {
-    display:none;
-    position:fixed;
-    inset:0;
-    background: rgba(0,0,0,0.9);
-    justify-content:center;
-    align-items:center;
-    z-index:3000;
-  }
-  #previewImage {
-    max-width:90%;
-    max-height:90%;
-    transform-origin: center center;
-    transition: transform 0.2s ease;
-    cursor: grab;
-  }
-  #closePreview {
-    position:absolute;
-    top:20px;
-    right:20px;
-    padding:8px 12px;
-    font-size:16px;
-    cursor:pointer;
-  }
+  #controls { margin-top: 8px; }
+  button, select { margin: 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+  #diag { font-size: 12px; color: #333; margin-top: 6px; }
+
+  .thumb-container { display: inline-block; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; }
+  .thumb-container img { display: block; height: 120px; margin-bottom: 5px; border: 1px solid #ccc; cursor: pointer; }
+
+  #cropModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+               flex-direction: column; align-items: center; justify-content: flex-start; overflow: auto; padding: 20px; z-index: 2000; }
+  #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; }
+  .button-bar { position: sticky; bottom: 0; background: rgba(0,0,0,0.85); padding: 10px; display: flex; gap: 10px; justify-content: center; }
+  #previewModal { display:none; position:fixed; inset:0; background: rgba(0,0,0,0.9); justify-content:center; align-items:center; z-index:3000; }
+  #previewImage { max-width:90%; max-height:90%; transform-origin: center center; transition: transform 0.2s ease; cursor: grab; }
+  #closePreview { position:absolute; top:20px; right:20px; padding:8px 12px; font-size:16px; cursor:pointer; }
 </style>
 </head>
 <body>
 
 <h1>Webcam to PDF Scanner</h1>
-<video id="video" autoplay playsinline></video><br>
-<label for="qualitySelect">PDF Quality:</label>
-<select id="qualitySelect">
-  <option value="high" selected>High (Camera Max Resolution / Crop Actual)</option>
-  <option value="standard">Standard (850×1100)</option>
-</select>
-<button id="captureBtn">📷 Capture Page</button>
-<button id="downloadBtn">💾 Download PDF</button>
-<button id="flipBtn" style="display:none;">🔄 Flip Camera</button>
+
+<div id="videoWrap">
+  <video id="video" autoplay playsinline></video>
+</div>
+
+<div id="controls">
+  <button id="startBtn">🎥 Start / Restart Camera</button>
+  <label for="qualitySelect">PDF Quality:</label>
+  <select id="qualitySelect">
+    <option value="high" selected>High (Camera Max Resolution / Crop Actual)</option>
+    <option value="standard">Standard (850×1100)</option>
+  </select>
+  <button id="captureBtn">📷 Capture Page (Enter)</button>
+  <button id="downloadBtn">💾 Download PDF</button>
+  <button id="flipBtn" style="display:none;">🔄 Flip Camera</button>
+  <div id="diag"></div>
+</div>
+
 <div id="thumbnails"></div>
 
 <!-- Crop Modal -->
@@ -127,12 +74,13 @@
 <script>
 (async function(){
   const video = document.getElementById('video');
+  const startBtn = document.getElementById('startBtn');
+  const flipBtn = document.getElementById('flipBtn');
   const captureBtn = document.getElementById('captureBtn');
   const downloadBtn = document.getElementById('downloadBtn');
-  const flipBtn = document.getElementById('flipBtn');
-  const thumbnails = document.getElementById('thumbnails');
   const qualitySelect = document.getElementById('qualitySelect');
-  const capturedImages = [];
+  const thumbnails = document.getElementById('thumbnails');
+  const diag = document.getElementById('diag');
 
   const cropModal = document.getElementById('cropModal');
   const cropCanvas = document.getElementById('cropCanvas');
@@ -144,53 +92,95 @@
   const previewImage = document.getElementById('previewImage');
   const closePreview = document.getElementById('closePreview');
 
-  let croppingIndex = null;
-  let points = [];
+  let currentStream = null;
+  let currentFacingMode = 'environment'; // prefer rear
   let draggingPoint = null;
-
-  let camMaxWidth = 1920; 
-  let camMaxHeight = 1080;
-  let currentFacingMode = "environment"; // start with rear if possible
-
   let scale = 1, isPanning = false, startX, startY, originX = 0, originY = 0;
 
-  async function startCamera(facingMode = "environment") {
+  const capturedImages = [];
+  let points = [];
+  let croppingIndex = null;
+
+  // Resize preview to keep buttons visible (maintain aspect via object-fit)
+  function resizeVideoToKeepButtonsVisible() {
+    // Reserve ~180px for controls/thumbnails; adjust if you add/remove UI
+    const RESERVED = 180;
+    const maxH = Math.max(220, window.innerHeight - RESERVED);
+    video.style.maxHeight = maxH + 'px';
+  }
+  window.addEventListener('resize', resizeVideoToKeepButtonsVisible);
+
+  function setDiag(text) { diag.textContent = text; }
+
+  async function countCameras() {
     try {
-      const constraints = {
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 9999 },
-          height: { ideal: 9999 }
-        }
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      video.srcObject = stream;
-      await new Promise(res => video.onloadedmetadata = res);
-      camMaxWidth = video.videoWidth;
-      camMaxHeight = video.videoHeight;
-      console.log(`Camera started (${facingMode}) at ${camMaxWidth}×${camMaxHeight}`);
-    } catch (err) {
-      console.error("Error accessing camera:", err);
-    }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.filter(d => d.kind === 'videoinput').length;
+    } catch { return 1; }
   }
 
-  // Detect multiple cameras
-  async function checkCameraCount() {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoInputs = devices.filter(d => d.kind === "videoinput");
-    if (videoInputs.length > 1) {
-      flipBtn.style.display = "inline-block";
-    }
+  async function tryGet(constraints) {
+    try { return await navigator.mediaDevices.getUserMedia(constraints); }
+    catch(e){ return null; }
   }
+
+  async function startCamera(preferredFacing = currentFacingMode) {
+    // stop previous
+    if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+
+    // HTTPS check
+    const insecure = location.protocol !== 'https:' && location.hostname !== 'localhost';
+    if (insecure) {
+      setDiag('This page must be served over HTTPS for camera access.');
+    }
+
+    const attempts = [
+      { label: 'rear+max',   c: { video: { facingMode: { ideal: preferredFacing }, width: { ideal: 9999 }, height: { ideal: 9999 } } } },
+      { label: 'rear',       c: { video: { facingMode: { ideal: preferredFacing } } } },
+      { label: 'front+max',  c: { video: { facingMode: { ideal: (preferredFacing==='environment'?'user':'environment') }, width: { ideal: 9999 }, height: { ideal: 9999 } } } },
+      { label: 'front',      c: { video: { facingMode: { ideal: (preferredFacing==='environment'?'user':'environment') } } } },
+      { label: 'any',        c: { video: true } },
+    ];
+
+    let used = null, stream = null;
+    for (const a of attempts) {
+      stream = await tryGet(a.c);
+      if (stream) { used = a.label; break; }
+    }
+
+    if (!stream) {
+      alert('Unable to access camera. If this is embedded in Schoology, open it in a new tab; if on iOS, tap the page once, then press Start.');
+      setDiag('Failed to start camera.');
+      return;
+    }
+
+    currentStream = stream;
+    video.srcObject = stream;
+    await new Promise(res => video.onloadedmetadata = res);
+
+    // Show actual resolution
+    const w = video.videoWidth || 0, h = video.videoHeight || 0;
+    setDiag(`Camera: ${used} | Resolution: ${w}×${h}`);
+
+    // Show flip button only if multiple cams
+    flipBtn.style.display = (await countCameras()) > 1 ? 'inline-block' : 'none';
+
+    resizeVideoToKeepButtonsVisible();
+  }
+
+  startBtn.onclick = () => startCamera();
 
   flipBtn.onclick = async () => {
-    currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+    currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
     await startCamera(currentFacingMode);
   };
 
-  await checkCameraCount();
-  await startCamera(currentFacingMode);
+  // ENTER to capture
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') captureBtn.click();
+  });
 
+  // ---- Capture / Thumbs / Crop / Rotate / Delete / PDF ----
   function renderThumbnails(){
     thumbnails.innerHTML = "";
     capturedImages.forEach((imgObj, index) => {
@@ -239,14 +229,18 @@
   }
 
   captureBtn.onclick = () => {
+    if (!video.srcObject) {
+      alert('Start the camera first.');
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
 
-    let targetWidth = (qualitySelect.value === "standard") ? 850 : camMaxWidth;
-    let targetHeight = (qualitySelect.value === "standard") ? 1100 : camMaxHeight;
+    let targetWidth = (qualitySelect.value === "standard") ? 850 : video.videoWidth;
+    let targetHeight = (qualitySelect.value === "standard") ? 1100 : video.videoHeight;
 
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = targetWidth;
@@ -296,9 +290,7 @@
     cropCtx.lineWidth = 2;
     cropCtx.beginPath();
     cropCtx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      cropCtx.lineTo(points[i].x, points[i].y);
-    }
+    for (let i = 1; i < points.length; i++) cropCtx.lineTo(points[i].x, points[i].y);
     cropCtx.closePath();
     cropCtx.stroke();
 
@@ -331,40 +323,30 @@
   applyCropBtn.onclick = () => {
     const imgObj = capturedImages[croppingIndex];
     let dstW, dstH;
-    if (qualitySelect.value === "standard") {
-      dstW = 850;
-      dstH = 1100;
-    } else {
+    if (qualitySelect.value === "standard") { dstW = 850; dstH = 1100; }
+    else {
       dstW = Math.round(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
       dstH = Math.round(Math.hypot(points[3].x - points[0].x, points[3].y - points[0].y));
     }
 
     const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      points[0].x, points[0].y,
-      points[1].x, points[1].y,
-      points[2].x, points[2].y,
-      points[3].x, points[3].y
+      points[0].x, points[0].y, points[1].x, points[1].y,
+      points[2].x, points[2].y, points[3].x, points[3].y
     ]);
     const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0,
-      dstW - 1, 0,
-      dstW - 1, dstH - 1,
-      0, dstH - 1
+      0, 0, dstW - 1, 0, dstW - 1, dstH - 1, 0, dstH - 1
     ]);
-
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
     const srcMat = cv.imread(imgObj.imageElement);
     const dst = new cv.Mat();
     cv.warpPerspective(srcMat, dst, M, new cv.Size(dstW, dstH));
 
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = dstW;
-    tempCanvas.height = dstH;
+    tempCanvas.width = dstW; tempCanvas.height = dstH;
     cv.imshow(tempCanvas, dst);
 
     imgObj.data = tempCanvas.toDataURL('image/jpeg', 1.0);
-    imgObj.width = dstW;
-    imgObj.height = dstH;
+    imgObj.width = dstW; imgObj.height = dstH;
     imgObj.imageElement = new Image();
     imgObj.imageElement.src = imgObj.data;
     imgObj.imageElement.onload = renderThumbnails;
@@ -376,13 +358,9 @@
   cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
 
   downloadBtn.onclick = () => {
-    if (!capturedImages.length) {
-      alert("No pages captured!");
-      return;
-    }
+    if (!capturedImages.length) { alert("No pages captured!"); return; }
     const { jsPDF } = window.jspdf;
     let pdf = null;
-
     capturedImages.forEach((img, index) => {
       if (index === 0) {
         pdf = new jsPDF({
@@ -398,39 +376,10 @@
     pdf.save("scan.pdf");
   };
 
-  function openPreview(src){
-    previewImage.src = src;
-    scale = 1;
-    originX = 0;
-    originY = 0;
-    previewImage.style.transform = `translate(0px, 0px) scale(1)`;
-    previewModal.style.display = "flex";
-  }
-  closePreview.onclick = () => { previewModal.style.display = "none"; };
-
-  previewImage.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const zoomSpeed = 0.1;
-    if (e.deltaY < 0) scale += zoomSpeed; else scale -= zoomSpeed;
-    scale = Math.max(1, Math.min(scale, 5));
-    previewImage.style.transform = `translate(${originX}px, ${originY}px) scale(${scale})`;
-  });
-  previewImage.addEventListener('mousedown', (e) => {
-    if (scale <= 1) return;
-    isPanning = true;
-    startX = e.clientX - originX;
-    startY = e.clientY - originY;
-    previewImage.style.cursor = 'grabbing';
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!isPanning) return;
-    originX = e.clientX - startX;
-    originY = e.clientY - startY;
-    previewImage.style.transform = `translate(${originX}px, ${originY}px) scale(${scale})`;
-  });
-  document.addEventListener('mouseup', () => {
-    isPanning = false;
-    previewImage.style.cursor = 'grab';
+  // iOS often needs a user gesture; if they don’t click Start, still try once on load
+  window.addEventListener('load', () => {
+    startCamera().catch(()=>{});
+    resizeVideoToKeepButtonsVisible();
   });
 })();
 </script>
