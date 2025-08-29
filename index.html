@@ -104,6 +104,7 @@
 
   function setDiag(text) { diag.textContent = text; }
 
+  // --- Responsive preview (preserve aspect) ---
   function resizePreview() {
     const vpW = Math.max(320, window.innerWidth - 40);
     const reserved = Math.max(160, controls.offsetHeight + 40);
@@ -357,4 +358,47 @@
 
     imgObj.data = tempCanvas.toDataURL('image/jpeg', 1.0);
     imgObj.width = dstW; imgObj.height = dstH;
-    imgObj.imageElement =
+    imgObj.imageElement = new Image();
+    imgObj.imageElement.src = imgObj.data;
+    imgObj.imageElement.onload = renderThumbnails;
+
+    srcTri.delete(); dstTri.delete(); M.delete(); srcMat.delete(); dst.delete();
+    cropModal.style.display = "none";
+  };
+
+  cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
+
+  downloadBtn.onclick = () => {
+    if (!capturedImages.length) { alert("No pages captured!"); return; }
+    const { jsPDF } = window.jspdf;
+    let pdf = null;
+    capturedImages.forEach((img, index) => {
+      if (index === 0) {
+        pdf = new jsPDF({
+          orientation: img.width > img.height ? "landscape" : "portrait",
+          unit: "px",
+          format: [img.width, img.height]
+        });
+      } else {
+        pdf.addPage([img.width, img.height], img.width > img.height ? "landscape" : "portrait");
+      }
+      pdf.addImage(img.data, 'JPEG', 0, 0, img.width, img.height);
+    });
+    pdf.save("scan.pdf");
+  };
+
+  closePreview.onclick = () => { previewModal.style.display = "none"; };
+  function openPreview(src){ previewImage.src = src; previewModal.style.display = "flex"; }
+
+  // Start camera and size preview
+  window.addEventListener('load', () => { startCamera().catch(()=>{}); });
+  video.addEventListener('loadedmetadata', () => {
+    camW = video.videoWidth || camW;
+    camH = video.videoHeight || camH;
+    resizePreview();
+  });
+})();
+</script>
+
+</body>
+</html>
