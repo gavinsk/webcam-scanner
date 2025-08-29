@@ -2,15 +2,13 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Reliable Preview + Fallbacks)</title>
+<title>Webcam to PDF Scanner (Responsive Aspect Preview + Pointer Crop)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
   #videoWrap { display:inline-block; max-width: 100%; }
   video {
     border: 2px solid #333; border-radius: 4px;
-    width: auto; height: auto; max-width: 100%;
-    object-fit: contain; /* preserve full FOV */
     display: block; margin: 0 auto;
   }
   #controls { margin-top: 8px; }
@@ -22,8 +20,9 @@
 
   #cropModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
                flex-direction: column; align-items: center; justify-content: flex-start; overflow: auto; padding: 20px; z-index: 2000; }
-  #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; }
+  #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; touch-action: none; }
   .button-bar { position: sticky; bottom: 0; background: rgba(0,0,0,0.85); padding: 10px; display: flex; gap: 10px; justify-content: center; }
+
   #previewModal { display:none; position:fixed; inset:0; background: rgba(0,0,0,0.9); justify-content:center; align-items:center; z-index:3000; }
   #previewImage { max-width:90%; max-height:90%; transform-origin: center center; transition: transform 0.2s ease; cursor: grab; }
   #closePreview { position:absolute; top:20px; right:20px; padding:8px 12px; font-size:16px; cursor:pointer; }
@@ -81,6 +80,7 @@
   const qualitySelect = document.getElementById('qualitySelect');
   const thumbnails = document.getElementById('thumbnails');
   const diag = document.getElementById('diag');
+  const controls = document.getElementById('controls');
 
   const cropModal = document.getElementById('cropModal');
   const cropCanvas = document.getElementById('cropCanvas');
@@ -94,23 +94,33 @@
 
   let currentStream = null;
   let currentFacingMode = 'environment'; // prefer rear
+  let camW = 1280, camH = 720; // updated by actual stream
   let draggingPoint = null;
-  let scale = 1, isPanning = false, startX, startY, originX = 0, originY = 0;
-
-  const capturedImages = [];
+  const HANDLE_RADIUS = 18;
   let points = [];
   let croppingIndex = null;
 
-  // Resize preview to keep buttons visible (maintain aspect via object-fit)
-  function resizeVideoToKeepButtonsVisible() {
-    // Reserve ~180px for controls/thumbnails; adjust if you add/remove UI
-    const RESERVED = 180;
-    const maxH = Math.max(220, window.innerHeight - RESERVED);
-    video.style.maxHeight = maxH + 'px';
-  }
-  window.addEventListener('resize', resizeVideoToKeepButtonsVisible);
+  const capturedImages = [];
 
   function setDiag(text) { diag.textContent = text; }
+
+  function resizePreview() {
+    const vpW = Math.max(320, window.innerWidth - 40);
+    const reserved = Math.max(160, controls.offsetHeight + 40);
+    const vpH = Math.max(240, window.innerHeight - reserved);
+
+    const ar = camW / camH;
+    let drawW = vpW;
+    let drawH = Math.round(drawW / ar);
+    if (drawH > vpH) {
+      drawH = vpH;
+      drawW = Math.round(drawH * ar);
+    }
+
+    video.style.width = drawW + 'px';
+    video.style.height = drawH + 'px';
+  }
+  window.addEventListener('resize', resizePreview);
 
   async function countCameras() {
     try {
@@ -125,19 +135,11 @@
   }
 
   async function startCamera(preferredFacing = currentFacingMode) {
-    // stop previous
     if (currentStream) currentStream.getTracks().forEach(t => t.stop());
-
-    // HTTPS check
-    const insecure = location.protocol !== 'https:' && location.hostname !== 'localhost';
-    if (insecure) {
-      setDiag('This page must be served over HTTPS for camera access.');
-    }
 
     const attempts = [
       { label: 'rear+max',   c: { video: { facingMode: { ideal: preferredFacing }, width: { ideal: 9999 }, height: { ideal: 9999 } } } },
       { label: 'rear',       c: { video: { facingMode: { ideal: preferredFacing } } } },
-      { label: 'front+max',  c: { video: { facingMode: { ideal: (preferredFacing==='environment'?'user':'environment') }, width: { ideal: 9999 }, height: { ideal: 9999 } } } },
       { label: 'front',      c: { video: { facingMode: { ideal: (preferredFacing==='environment'?'user':'environment') } } } },
       { label: 'any',        c: { video: true } },
     ];
@@ -149,7 +151,7 @@
     }
 
     if (!stream) {
-      alert('Unable to access camera. If this is embedded in Schoology, open it in a new tab; if on iOS, tap the page once, then press Start.');
+      alert('Unable to access camera. Try HTTPS or open in a new tab if embedded.');
       setDiag('Failed to start camera.');
       return;
     }
@@ -158,35 +160,29 @@
     video.srcObject = stream;
     await new Promise(res => video.onloadedmetadata = res);
 
-    // Show actual resolution
-    const w = video.videoWidth || 0, h = video.videoHeight || 0;
-    setDiag(`Camera: ${used} | Resolution: ${w}×${h}`);
-
-    // Show flip button only if multiple cams
+    camW = video.videoWidth || camW;
+    camH = video.videoHeight || camH;
+    setDiag(`Camera: ${used} | Resolution: ${camW}×${camH}`);
     flipBtn.style.display = (await countCameras()) > 1 ? 'inline-block' : 'none';
 
-    resizeVideoToKeepButtonsVisible();
+    resizePreview();
   }
 
   startBtn.onclick = () => startCamera();
-
   flipBtn.onclick = async () => {
     currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
     await startCamera(currentFacingMode);
   };
 
-  // ENTER to capture
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') captureBtn.click();
   });
 
-  // ---- Capture / Thumbs / Crop / Rotate / Delete / PDF ----
   function renderThumbnails(){
     thumbnails.innerHTML = "";
     capturedImages.forEach((imgObj, index) => {
       const container = document.createElement('div');
       container.className = "thumb-container";
-
       const img = document.createElement('img');
       img.src = imgObj.data;
       img.onclick = () => openPreview(imgObj.data);
@@ -278,7 +274,6 @@
       {x: imgObj.width * 0.9, y: imgObj.height * 0.9},
       {x: imgObj.width * 0.1, y: imgObj.height * 0.9}
     ];
-
     drawCropOverlay();
     cropModal.style.display = "flex";
   }
@@ -293,32 +288,47 @@
     for (let i = 1; i < points.length; i++) cropCtx.lineTo(points[i].x, points[i].y);
     cropCtx.closePath();
     cropCtx.stroke();
-
     cropCtx.fillStyle = "yellow";
     points.forEach(p => {
       cropCtx.beginPath();
-      cropCtx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
+      cropCtx.arc(p.x, p.y, 10, 0, 2 * Math.PI);
       cropCtx.fill();
       cropCtx.stroke();
     });
   }
 
-  cropCanvas.onmousedown = (e) => {
+  function getCanvasCoordsFromPointer(e) {
     const rect = cropCanvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  cropCanvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const { x, y } = getCanvasCoordsFromPointer(e);
+    draggingPoint = null;
     points.forEach((p, idx) => {
-      if (Math.hypot(p.x - mx, p.y - my) < 10) draggingPoint = idx;
+      if (Math.hypot(p.x - x, p.y - y) <= HANDLE_RADIUS) draggingPoint = idx;
     });
-  };
-  cropCanvas.onmousemove = (e) => {
+    if (draggingPoint !== null) cropCanvas.setPointerCapture?.(e.pointerId);
+  });
+
+  cropCanvas.addEventListener('pointermove', (e) => {
     if (draggingPoint === null) return;
-    const rect = cropCanvas.getBoundingClientRect();
-    points[draggingPoint].x = e.clientX - rect.left;
-    points[draggingPoint].y = e.clientY - rect.top;
+    e.preventDefault();
+    const { x, y } = getCanvasCoordsFromPointer(e);
+    points[draggingPoint].x = x;
+    points[draggingPoint].y = y;
     drawCropOverlay();
-  };
-  cropCanvas.onmouseup = () => { draggingPoint = null; };
+  });
+
+  function endDrag(e) {
+    if (draggingPoint !== null) {
+      try { cropCanvas.releasePointerCapture?.(e.pointerId); } catch {}
+    }
+    draggingPoint = null;
+  }
+  cropCanvas.addEventListener('pointerup', endDrag);
+  cropCanvas.addEventListener('pointercancel', endDrag);
 
   applyCropBtn.onclick = () => {
     const imgObj = capturedImages[croppingIndex];
@@ -347,42 +357,4 @@
 
     imgObj.data = tempCanvas.toDataURL('image/jpeg', 1.0);
     imgObj.width = dstW; imgObj.height = dstH;
-    imgObj.imageElement = new Image();
-    imgObj.imageElement.src = imgObj.data;
-    imgObj.imageElement.onload = renderThumbnails;
-
-    srcTri.delete(); dstTri.delete(); M.delete(); srcMat.delete(); dst.delete();
-    cropModal.style.display = "none";
-  };
-
-  cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
-
-  downloadBtn.onclick = () => {
-    if (!capturedImages.length) { alert("No pages captured!"); return; }
-    const { jsPDF } = window.jspdf;
-    let pdf = null;
-    capturedImages.forEach((img, index) => {
-      if (index === 0) {
-        pdf = new jsPDF({
-          orientation: img.width > img.height ? "landscape" : "portrait",
-          unit: "px",
-          format: [img.width, img.height]
-        });
-      } else {
-        pdf.addPage([img.width, img.height], img.width > img.height ? "landscape" : "portrait");
-      }
-      pdf.addImage(img.data, 'JPEG', 0, 0, img.width, img.height);
-    });
-    pdf.save("scan.pdf");
-  };
-
-  // iOS often needs a user gesture; if they don’t click Start, still try once on load
-  window.addEventListener('load', () => {
-    startCamera().catch(()=>{});
-    resizeVideoToKeepButtonsVisible();
-  });
-})();
-</script>
-
-</body>
-</html>
+    imgObj.imageElement =
