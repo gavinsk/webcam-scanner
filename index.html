@@ -1,233 +1,139 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Webcam PDF Scanner</title>
+  <meta charset="UTF-8">
+  <title>Webcam to PDF Scanner (Mobile Friendly with Flip Camera)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body {
       font-family: sans-serif;
-      background-color: #f0f0f0;
-      margin: 0;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
+      text-align: center;
+      margin: 20px;
+      background: #f4f4f4;
     }
-    .container {
-      max-width: 1000px;
+    #videoContainer {
+      display: flex;
+      justify-content: center;
+      align-items: center;
       width: 100%;
-      margin: 1rem;
-      background: white;
-      padding: 1rem;
-      border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      max-width: 100vw;
     }
     video {
-      max-width: 90vw;
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 100%;
       height: auto;
-      border: 2px solid black;
+      max-width: 100%;
     }
-    canvas, .crop-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      pointer-events: none;
+    button, select {
+      margin: 5px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
     }
-    .controls, .gallery, .capture-area {
-      margin-top: 1rem;
+    .thumb-container {
+      display: inline-block;
+      text-align: center;
+      margin: 5px;
+      background: white;
+      padding: 5px;
+      border-radius: 4px;
     }
-    .gallery img {
-      width: 100px;
-      margin: 0.5rem;
+    .thumb-container img {
+      display: block;
+      height: 120px;
+      margin-bottom: 5px;
       border: 1px solid #ccc;
       cursor: pointer;
     }
-    .capture-area {
-      position: relative;
-      display: inline-block;
-    }
-    .corner {
-      width: 12px;
-      height: 12px;
-      background: red;
-      border-radius: 50%;
-      position: absolute;
-      cursor: move;
-    }
-    #enlargedView {
+    #cropModal {
       display: none;
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: rgba(0, 0, 0, 0.8);
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      overflow: auto;
+      padding: 20px;
+      z-index: 2000;
+    }
+    #cropCanvas {
+      background: white;
+      cursor: crosshair;
+      max-width: 95%;
+      height: auto;
+    }
+    .button-bar {
+      position: sticky;
+      bottom: 0;
+      background: rgba(0,0,0,0.85);
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+    #previewModal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.9);
       justify-content: center;
       align-items: center;
+      z-index: 3000;
     }
-    #enlargedView img {
-      max-width: 95%;
-      max-height: 95%;
+    #previewImage {
+      max-width: 90%;
+      max-height: 90%;
+      transform-origin: center center;
+      transition: transform 0.2s ease;
+      cursor: grab;
     }
-    @media (max-width: 768px) {
-      .container {
-        margin: 0;
-        border-radius: 0;
-      }
+    #closePreview {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      padding: 8px 12px;
+      font-size: 16px;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h2>Webcam PDF Scanner</h2>
-    <div class="capture-area">
-      <video id="video" autoplay playsinline></video>
-      <canvas id="overlayCanvas"></canvas>
-      <div id="cropCorners"></div>
-    </div>
+  <h1>Webcam to PDF Scanner</h1>
+  <div id="videoContainer">
+    <video id="video" autoplay playsinline></video>
+  </div>
+  <br>
+  <label for="qualitySelect">PDF Quality:</label>
+  <select id="qualitySelect">
+    <option value="high" selected>High (Camera Max Resolution / Crop Actual)</option>
+    <option value="standard">Standard (850×1100)</option>
+  </select>
+  <button id="captureBtn">📷 Capture Page</button>
+  <button id="downloadBtn">💾 Download PDF</button>
+  <button id="flipBtn" style="display:none;">🔄 Flip Camera</button>
+  <div id="thumbnails"></div>
 
-    <div class="controls">
-      <button onclick="captureImage()">Capture</button>
-      <button onclick="rotateCurrentImage()">Rotate</button>
-      <button onclick="deleteCurrentImage()">Delete</button>
-      <button onclick="downloadPDF()">Download PDF</button>
-      <select id="qualitySelect">
-        <option value="high" selected>High Quality</option>
-        <option value="standard">Standard</option>
-      </select>
-      <button onclick="flipCamera()">Flip Camera</button>
+  <!-- Crop Modal -->
+  <div id="cropModal">
+    <canvas id="cropCanvas"></canvas>
+    <div class="button-bar">
+      <button id="applyCrop">✅ Apply Crop</button>
+      <button id="cancelCrop">❌ Cancel</button>
     </div>
-
-    <div class="gallery" id="gallery"></div>
   </div>
 
-  <div id="enlargedView" onclick="closeEnlargedView()">
-    <img id="enlargedImg" src="" alt="Preview" />
+  <!-- Preview Modal -->
+  <div id="previewModal">
+    <img id="previewImage" src="">
+    <button id="closePreview">❌ Close</button>
   </div>
 
-  <canvas id="hiddenCanvas" style="display: none;"></canvas>
-
+  <script src="https://docs.opencv.org/4.x/opencv.js" async onload="cv['onRuntimeInitialized']=()=>{window.cvReady=true;}"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script>
-    let video = document.getElementById('video');
-    let overlayCanvas = document.getElementById('overlayCanvas');
-    let hiddenCanvas = document.getElementById('hiddenCanvas');
-    let currentStream = null;
-    let facingMode = "environment";
-    let images = [];
-
-    async function initCamera() {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
-      }
-      let constraints = {
-        video: {
-          facingMode: { exact: facingMode }
-        }
-      };
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoInputs = devices.filter(d => d.kind === 'videoinput');
-        if (videoInputs.length > 0) {
-          constraints.video.deviceId = { exact: videoInputs[0].deviceId };
-        }
-      } catch {}
-
-      navigator.mediaDevices.getUserMedia(constraints).then(stream => {
-        currentStream = stream;
-        video.srcObject = stream;
-      }).catch(err => {
-        console.error("Error accessing webcam: ", err);
-      });
-    }
-
-    function flipCamera() {
-      facingMode = (facingMode === "environment") ? "user" : "environment";
-      initCamera();
-    }
-
-    function captureImage() {
-      let quality = document.getElementById('qualitySelect').value;
-      let width = video.videoWidth;
-      let height = video.videoHeight;
-
-      hiddenCanvas.width = width;
-      hiddenCanvas.height = height;
-      hiddenCanvas.getContext('2d').drawImage(video, 0, 0, width, height);
-      let dataUrl = hiddenCanvas.toDataURL("image/jpeg", quality === "high" ? 1.0 : 0.8);
-
-      images.push({ dataUrl, rotation: 0 });
-      refreshGallery();
-    }
-
-    function refreshGallery() {
-      const gallery = document.getElementById('gallery');
-      gallery.innerHTML = '';
-      images.forEach((img, idx) => {
-        let imageEl = document.createElement('img');
-        imageEl.src = img.dataUrl;
-        imageEl.onclick = () => enlargeImage(img.dataUrl);
-        gallery.appendChild(imageEl);
-      });
-    }
-
-    function enlargeImage(url) {
-      document.getElementById('enlargedImg').src = url;
-      document.getElementById('enlargedView').style.display = 'flex';
-    }
-
-    function closeEnlargedView() {
-      document.getElementById('enlargedView').style.display = 'none';
-    }
-
-    function rotateCurrentImage() {
-      if (images.length > 0) {
-        let last = images[images.length - 1];
-        let img = new Image();
-        img.onload = function() {
-          hiddenCanvas.width = img.height;
-          hiddenCanvas.height = img.width;
-          let ctx = hiddenCanvas.getContext('2d');
-          ctx.save();
-          ctx.translate(hiddenCanvas.width / 2, hiddenCanvas.height / 2);
-          ctx.rotate(Math.PI / 2);
-          ctx.drawImage(img, -img.width / 2, -img.height / 2);
-          ctx.restore();
-          last.dataUrl = hiddenCanvas.toDataURL("image/jpeg", 1.0);
-          refreshGallery();
-        }
-        img.src = last.dataUrl;
-      }
-    }
-
-    function deleteCurrentImage() {
-      if (images.length > 0) {
-        images.pop();
-        refreshGallery();
-      }
-    }
-
-    function downloadPDF() {
-      import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js').then(({ jsPDF }) => {
-        const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
-        const pageWidth = pdf.internal.pageSize.getWidth();
-        const pageHeight = pdf.internal.pageSize.getHeight();
-        images.forEach((img, i) => {
-          const image = new Image();
-          image.src = img.dataUrl;
-          pdf.addImage(img.dataUrl, 'JPEG', 0, 0, pageWidth, pageHeight);
-          if (i < images.length - 1) pdf.addPage();
-        });
-        pdf.save("scanned.pdf");
-      });
-    }
-
-    video.addEventListener('loadedmetadata', () => {
-      overlayCanvas.width = video.clientWidth;
-      overlayCanvas.height = video.clientHeight;
-    });
-
-    initCamera();
+    // No script changes required here; resizing is handled via CSS with max-width and auto height.
   </script>
 </body>
 </html>
