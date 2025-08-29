@@ -3,181 +3,231 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF Scanner</title>
+  <title>Webcam PDF Scanner</title>
   <style>
     body {
-      font-family: Arial, sans-serif;
+      font-family: sans-serif;
       background-color: #f0f0f0;
       margin: 0;
-      padding: 1rem;
-      text-align: center;
-    }
-    #video-container {
+      padding: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
-      max-height: 60vh;
-      overflow: hidden;
+    }
+    .container {
+      max-width: 1000px;
+      width: 100%;
+      margin: 1rem;
+      background: white;
+      padding: 1rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     }
     video {
-      width: auto;
-      height: 100%;
-      max-height: 100%;
-      border: 2px solid #333;
-      border-radius: 4px;
+      max-width: 90vw;
+      height: auto;
+      border: 2px solid black;
     }
-    canvas {
-      display: none;
+    canvas, .crop-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
     }
-    #controls {
+    .controls, .gallery, .capture-area {
       margin-top: 1rem;
     }
-    button {
+    .gallery img {
+      width: 100px;
       margin: 0.5rem;
-      padding: 0.6rem 1.2rem;
-      font-size: 16px;
-      border: none;
-      border-radius: 4px;
-      background-color: #333;
-      color: white;
+      border: 1px solid #ccc;
       cursor: pointer;
     }
-    button:hover {
-      background-color: #555;
-    }
-    .captured-images {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      margin-top: 2rem;
-    }
-    .thumbnail {
+    .capture-area {
       position: relative;
-      margin: 10px;
+      display: inline-block;
     }
-    .thumbnail img {
-      max-width: 150px;
-      height: auto;
-      border: 1px solid #999;
-      cursor: pointer;
-    }
-    .delete-btn {
-      position: absolute;
-      top: 5px;
-      right: 5px;
+    .corner {
+      width: 12px;
+      height: 12px;
       background: red;
-      color: white;
-      border: none;
       border-radius: 50%;
-      width: 20px;
-      height: 20px;
-      cursor: pointer;
-      font-size: 12px;
-      line-height: 18px;
-      text-align: center;
+      position: absolute;
+      cursor: move;
+    }
+    #enlargedView {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.8);
+      justify-content: center;
+      align-items: center;
+    }
+    #enlargedView img {
+      max-width: 95%;
+      max-height: 95%;
+    }
+    @media (max-width: 768px) {
+      .container {
+        margin: 0;
+        border-radius: 0;
+      }
     }
   </style>
 </head>
 <body>
+  <div class="container">
+    <h2>Webcam PDF Scanner</h2>
+    <div class="capture-area">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="overlayCanvas"></canvas>
+      <div id="cropCorners"></div>
+    </div>
 
-  <h1>PDF Scanner</h1>
+    <div class="controls">
+      <button onclick="captureImage()">Capture</button>
+      <button onclick="rotateCurrentImage()">Rotate</button>
+      <button onclick="deleteCurrentImage()">Delete</button>
+      <button onclick="downloadPDF()">Download PDF</button>
+      <select id="qualitySelect">
+        <option value="high" selected>High Quality</option>
+        <option value="standard">Standard</option>
+      </select>
+      <button onclick="flipCamera()">Flip Camera</button>
+    </div>
 
-  <div id="video-container">
-    <video id="video" autoplay playsinline></video>
+    <div class="gallery" id="gallery"></div>
   </div>
 
-  <div id="controls">
-    <button id="capture">Capture Image</button>
-    <button id="download">Download PDF</button>
+  <div id="enlargedView" onclick="closeEnlargedView()">
+    <img id="enlargedImg" src="" alt="Preview" />
   </div>
 
-  <div class="captured-images" id="capturedImages"></div>
+  <canvas id="hiddenCanvas" style="display: none;"></canvas>
 
-  <canvas id="canvas"></canvas>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const captureBtn = document.getElementById('capture');
-    const downloadBtn = document.getElementById('download');
-    const capturedImagesContainer = document.getElementById('capturedImages');
+    let video = document.getElementById('video');
+    let overlayCanvas = document.getElementById('overlayCanvas');
+    let hiddenCanvas = document.getElementById('hiddenCanvas');
+    let currentStream = null;
+    let facingMode = "environment";
+    let images = [];
 
-    let capturedImages = [];
-
-    // Access webcam at full available resolution
-    navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "environment",
-        width: { ideal: 4096 },
-        height: { ideal: 2160 }
+    async function initCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
       }
-    }).then(stream => {
-      video.srcObject = stream;
-    }).catch(err => {
-      alert("Camera access denied: " + err);
-    });
+      let constraints = {
+        video: {
+          facingMode: { exact: facingMode }
+        }
+      };
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter(d => d.kind === 'videoinput');
+        if (videoInputs.length > 0) {
+          constraints.video.deviceId = { exact: videoInputs[0].deviceId };
+        }
+      } catch {}
 
-    // Capture image
-    captureBtn.addEventListener('click', () => {
-      const context = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imgData = canvas.toDataURL("image/jpeg", 1.0);
-      capturedImages.push(imgData);
-      displayCapturedImages();
-    });
-
-    // Download PDF
-    downloadBtn.addEventListener('click', () => {
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-
-      capturedImages.forEach((imgData, index) => {
-        if (index > 0) pdf.addPage();
-        pdf.addImage(imgData, 'JPEG', 0, 0, pageWidth, pageHeight);
-      });
-
-      pdf.save("scanned.pdf");
-    });
-
-    // Display thumbnails
-    function displayCapturedImages() {
-      capturedImagesContainer.innerHTML = '';
-      capturedImages.forEach((imgData, index) => {
-        const wrapper = document.createElement('div');
-        wrapper.classList.add('thumbnail');
-
-        const img = document.createElement('img');
-        img.src = imgData;
-        img.addEventListener('click', () => {
-          const popup = window.open("", "_blank");
-          popup.document.write(`<img src="${imgData}" style="width:100%; height:auto;" />`);
-        });
-
-        const delBtn = document.createElement('button');
-        delBtn.classList.add('delete-btn');
-        delBtn.innerText = '×';
-        delBtn.addEventListener('click', () => {
-          capturedImages.splice(index, 1);
-          displayCapturedImages();
-        });
-
-        wrapper.appendChild(img);
-        wrapper.appendChild(delBtn);
-        capturedImagesContainer.appendChild(wrapper);
+      navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        currentStream = stream;
+        video.srcObject = stream;
+      }).catch(err => {
+        console.error("Error accessing webcam: ", err);
       });
     }
 
-    // Allow pressing Enter/Return to capture
-    document.addEventListener('keydown', (e) => {
-      if (e.key === "Enter") {
-        captureBtn.click();
+    function flipCamera() {
+      facingMode = (facingMode === "environment") ? "user" : "environment";
+      initCamera();
+    }
+
+    function captureImage() {
+      let quality = document.getElementById('qualitySelect').value;
+      let width = video.videoWidth;
+      let height = video.videoHeight;
+
+      hiddenCanvas.width = width;
+      hiddenCanvas.height = height;
+      hiddenCanvas.getContext('2d').drawImage(video, 0, 0, width, height);
+      let dataUrl = hiddenCanvas.toDataURL("image/jpeg", quality === "high" ? 1.0 : 0.8);
+
+      images.push({ dataUrl, rotation: 0 });
+      refreshGallery();
+    }
+
+    function refreshGallery() {
+      const gallery = document.getElementById('gallery');
+      gallery.innerHTML = '';
+      images.forEach((img, idx) => {
+        let imageEl = document.createElement('img');
+        imageEl.src = img.dataUrl;
+        imageEl.onclick = () => enlargeImage(img.dataUrl);
+        gallery.appendChild(imageEl);
+      });
+    }
+
+    function enlargeImage(url) {
+      document.getElementById('enlargedImg').src = url;
+      document.getElementById('enlargedView').style.display = 'flex';
+    }
+
+    function closeEnlargedView() {
+      document.getElementById('enlargedView').style.display = 'none';
+    }
+
+    function rotateCurrentImage() {
+      if (images.length > 0) {
+        let last = images[images.length - 1];
+        let img = new Image();
+        img.onload = function() {
+          hiddenCanvas.width = img.height;
+          hiddenCanvas.height = img.width;
+          let ctx = hiddenCanvas.getContext('2d');
+          ctx.save();
+          ctx.translate(hiddenCanvas.width / 2, hiddenCanvas.height / 2);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(img, -img.width / 2, -img.height / 2);
+          ctx.restore();
+          last.dataUrl = hiddenCanvas.toDataURL("image/jpeg", 1.0);
+          refreshGallery();
+        }
+        img.src = last.dataUrl;
       }
+    }
+
+    function deleteCurrentImage() {
+      if (images.length > 0) {
+        images.pop();
+        refreshGallery();
+      }
+    }
+
+    function downloadPDF() {
+      import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js').then(({ jsPDF }) => {
+        const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        images.forEach((img, i) => {
+          const image = new Image();
+          image.src = img.dataUrl;
+          pdf.addImage(img.dataUrl, 'JPEG', 0, 0, pageWidth, pageHeight);
+          if (i < images.length - 1) pdf.addPage();
+        });
+        pdf.save("scanned.pdf");
+      });
+    }
+
+    video.addEventListener('loadedmetadata', () => {
+      overlayCanvas.width = video.clientWidth;
+      overlayCanvas.height = video.clientHeight;
     });
+
+    initCamera();
   </script>
 </body>
 </html>
