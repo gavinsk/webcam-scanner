@@ -1,19 +1,24 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<title>Webcam to PDF Scanner (Responsive with Crop Fixes)</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8" />
+<title>Webcam to PDF Scanner (Robust Start + Diagnostics)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <style>
-  body { font-family: sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
+  :root { --status-bg:#fff3cd; --status-fg:#5c4700; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; text-align: center; margin: 20px; background: #f4f4f4; }
+  #statusBar {
+    text-align: left; margin: 0 auto 12px; max-width: 900px; padding: 10px 12px;
+    background: var(--status-bg); color: var(--status-fg); border: 1px solid #e6cf86; border-radius: 6px;
+    font-size: 14px; white-space: pre-wrap; word-break: break-word;
+  }
   #videoWrap { display:inline-block; max-width: 100%; }
   video {
-    border: 2px solid #333; border-radius: 4px;
-    display: block; margin: 0 auto;
+    border: 2px solid #333; border-radius: 4px; display: block; margin: 0 auto;
   }
   #controls { margin-top: 8px; }
   button, select { margin: 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
-  #diag { font-size: 12px; color: #333; margin-top: 6px; }
+  #diag { font-size: 12px; color: #555; margin-top: 6px; min-height: 1.2em; }
 
   .thumb-container { display: inline-block; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; }
   .thumb-container img { display: block; height: 120px; margin-bottom: 5px; border: 1px solid #ccc; cursor: pointer; }
@@ -32,8 +37,12 @@
 
 <h1>Webcam to PDF Scanner</h1>
 
+<div id="statusBar">
+  Status: Page loaded. If the camera doesn’t start, click “Start / Restart Camera”.
+</div>
+
 <div id="videoWrap">
-  <video id="video" autoplay playsinline></video>
+  <video id="video" autoplay playsinline muted></video>
 </div>
 
 <div id="controls">
@@ -71,7 +80,19 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <script>
-(async function(){
+(function(){
+  // ===== Basic wiring / diagnostics =====
+  const statusBar = document.getElementById('statusBar');
+  function status(msg){ statusBar.textContent = 'Status: ' + msg; }
+  function append(msg){ statusBar.textContent += '\\n' + msg; }
+  window.onerror = function(msg, src, line, col, err){
+    append('JS error: ' + msg + (err ? (' | ' + (err.stack||err)) : ''));
+  };
+  window.onunhandledrejection = function(e){
+    append('Unhandled promise rejection: ' + (e.reason && (e.reason.stack||e.reason)));
+  };
+
+  // ===== Elements =====
   const video = document.getElementById('video');
   const startBtn = document.getElementById('startBtn');
   const flipBtn = document.getElementById('flipBtn');
@@ -92,73 +113,49 @@
   const previewImage = document.getElementById('previewImage');
   const closePreview = document.getElementById('closePreview');
 
+  // ===== State =====
   let currentStream = null;
   let currentFacingMode = 'environment';
   let camW = 1280, camH = 720;
-  let draggingPoint = null;
-  const CSS_HANDLE_RADIUS = 18;
-  let points = [];
-  let croppingIndex = null;
-
+  let points = [], draggingPoint = null, croppingIndex = null;
   const capturedImages = [];
 
-  // Ensure the crop canvas has a visible CSS size before measuring clientWidth/Height
-  function ensureCropCanvasCssSize(){
-    const rect = cropCanvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) {
-      cropCanvas.style.maxWidth = "95vw";
-      cropCanvas.style.width = Math.floor(window.innerWidth * 0.9) + "px";
-      cropCanvas.style.height = "auto";
-    }
-  }
-  window.addEventListener('resize', () => {
-    if (cropModal.style.display === "flex") {
-      ensureCropCanvasCssSize();
-      drawCropOverlay();
-    }
-  });
+  function setDiag(text){ diag.textContent = text; }
 
-  function setDiag(text) { diag.textContent = text; }
+  // ===== Environment checks (HTTPS/iframe) =====
+  const inIframe = (()=>{ try { return window.self !== window.top; } catch { return true; } })();
+  const insecure = location.protocol !== 'https:' && location.hostname !== 'localhost';
+  if (insecure) append('Warning: Not HTTPS or localhost — camera may be blocked.');
+  if (inIframe) append('Note: Page is running inside an iframe. If camera fails, open in a new tab.');
 
-  function resizePreview() {
+  // ===== Responsive preview (preserve aspect) =====
+  function resizePreview(){
     const vpW = Math.max(320, window.innerWidth - 40);
     const reserved = Math.max(160, controls.offsetHeight + 40);
     const vpH = Math.max(240, window.innerHeight - reserved);
-
     const ar = camW / camH;
-    let drawW = vpW;
-    let drawH = Math.round(drawW / ar);
-    if (drawH > vpH) {
-      drawH = vpH;
-      drawW = Math.round(drawH * ar);
-    }
-
+    let drawW = vpW, drawH = Math.round(drawW / ar);
+    if (drawH > vpH) { drawH = vpH; drawW = Math.round(drawH * ar); }
     video.style.width = drawW + 'px';
     video.style.height = drawH + 'px';
   }
   window.addEventListener('resize', resizePreview);
 
-  async function countCameras() {
+  async function countCameras(){
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      return devices.filter(d => d.kind === 'videoinput').length;
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      return devs.filter(d => d.kind === 'videoinput').length;
     } catch { return 1; }
   }
 
-  async function tryGet(constraints) {
-    try { return await navigator.mediaDevices.getUserMedia(constraints); }
-    catch(e){ return null; }
-  }
-
-  async function startCamera(preferredFacing = currentFacingMode) {
+  async function startCamera(preferredFacing = currentFacingMode){
     try {
-      if (currentStream) currentStream.getTracks().forEach(t => t.stop());
-      const insecure = location.protocol !== 'https:' && location.hostname !== 'localhost';
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setDiag('Camera API not available. Use Safari/Chrome over HTTPS.');
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        status('Camera API not available. Use Safari/Chrome over HTTPS.');
         return;
       }
-      if (insecure) setDiag('Not HTTPS (or localhost) — camera may be blocked.');
+      // stop previous
+      if (currentStream) currentStream.getTracks().forEach(t => t.stop());
 
       const attempts = [
         { label: 'rear+max',   c: { video: { facingMode: { ideal: preferredFacing }, width: { ideal: 9999 }, height: { ideal: 9999 } } } },
@@ -167,15 +164,13 @@
         { label: 'any',        c: { video: true } },
       ];
 
-      let used = null, stream = null, lastErr = null;
-      for (const a of attempts) {
+      let used=null, stream=null, lastErr=null;
+      for (const a of attempts){
         try { stream = await navigator.mediaDevices.getUserMedia(a.c); used = a.label; break; }
         catch(e){ lastErr = e; }
       }
-      if (!stream) {
-        console.error('getUserMedia failed:', lastErr);
-        alert('Unable to access camera. If embedded (e.g., Schoology), open in a new tab. Ensure HTTPS and grant permission.');
-        setDiag('Failed to start camera: ' + (lastErr && (lastErr.name+': '+lastErr.message)));
+      if (!stream){
+        status('Failed to start camera. ' + (lastErr ? (lastErr.name + ': ' + lastErr.message) : ''));
         return;
       }
 
@@ -186,14 +181,245 @@
       camW = video.videoWidth || camW;
       camH = video.videoHeight || camH;
       setDiag(`Camera: ${used} | Resolution: ${camW}×${camH}`);
+      status('Camera started: ' + used);
       flipBtn.style.display = (await countCameras()) > 1 ? 'inline-block' : 'none';
-
       resizePreview();
-    } catch (err) {
-      console.error('startCamera exception:', err);
-      setDiag('Camera error: ' + err.message);
+    } catch (err){
+      status('Camera error: ' + err.message);
+      console.error(err);
     }
-  })();
+  }
+
+  startBtn.addEventListener('click', () => startCamera());
+  flipBtn.addEventListener('click', async () => {
+    currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+    await startCamera(currentFacingMode);
+  });
+
+  // ENTER to capture
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') captureBtn.click();
+  });
+
+  // ===== Capture / thumbnails / rotate / crop / delete / pdf =====
+  function renderThumbnails(){
+    thumbnails.innerHTML = "";
+    capturedImages.forEach((imgObj, index) => {
+      const container = document.createElement('div');
+      container.className = "thumb-container";
+      const img = document.createElement('img');
+      img.src = imgObj.data;
+      img.onclick = () => openPreview(imgObj.data);
+      container.appendChild(img);
+
+      const rotateBtn = document.createElement('button');
+      rotateBtn.textContent = "🔄 Rotate";
+      rotateBtn.onclick = () => {
+        const tempCanvas = document.createElement('canvas');
+        const ctx = tempCanvas.getContext('2d');
+        tempCanvas.width = imgObj.height;
+        tempCanvas.height = imgObj.width;
+        ctx.translate(tempCanvas.width/2, tempCanvas.height/2);
+        ctx.rotate(Math.PI/2);
+        ctx.drawImage(imgObj.imageElement, -imgObj.width/2, -imgObj.height/2);
+        imgObj.data = tempCanvas.toDataURL('image/jpeg', 1.0);
+        imgObj.width = tempCanvas.width;
+        imgObj.height = tempCanvas.height;
+        imgObj.imageElement = new Image();
+        imgObj.imageElement.src = imgObj.data;
+        imgObj.imageElement.onload = renderThumbnails;
+      };
+      container.appendChild(rotateBtn);
+
+      const cropBtn = document.createElement('button');
+      cropBtn.textContent = "✂️ Crop";
+      cropBtn.onclick = () => startCropping(index);
+      container.appendChild(cropBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = "🗑 Delete";
+      deleteBtn.onclick = () => { capturedImages.splice(index, 1); renderThumbnails(); };
+      container.appendChild(deleteBtn);
+
+      thumbnails.appendChild(container);
+    });
+  }
+
+  captureBtn.onclick = () => {
+    if (!video.srcObject){ status('Start the camera first.'); return; }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    const hi = (qualitySelect.value !== 'standard');
+    const targetWidth  = hi ? video.videoWidth  : 850;
+    const targetHeight = hi ? video.videoHeight : 1100;
+
+    const out = document.createElement('canvas');
+    out.width = targetWidth; out.height = targetHeight;
+    out.getContext('2d').drawImage(canvas, 0, 0, targetWidth, targetHeight);
+
+    const data = out.toDataURL('image/jpeg', 1.0);
+    const img = new Image();
+    img.src = data;
+    img.onload = () => {
+      capturedImages.push({ data, width: out.width, height: out.height, imageElement: img });
+      renderThumbnails();
+    };
+  };
+
+  // ---- Crop (Pointer Events, scale-safe) ----
+  function ensureCropCanvasCssSize(){
+    const rect = cropCanvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      cropCanvas.style.maxWidth = "95vw";
+      cropCanvas.style.width = Math.floor(window.innerWidth * 0.9) + "px";
+      cropCanvas.style.height = "auto";
+    }
+  }
+  window.addEventListener('resize', () => {
+    if (cropModal.style.display === "flex") { ensureCropCanvasCssSize(); drawCropOverlay(); }
+  });
+
+  function startCropping(index){
+    if (!window.cvReady) { alert("OpenCV.js is still loading, try again in a moment."); return; }
+    croppingIndex = index;
+    const imgObj = capturedImages[index];
+    cropCanvas.width = imgObj.width; cropCanvas.height = imgObj.height;
+    cropModal.style.display = "flex"; // show first so Safari lays out
+    ensureCropCanvasCssSize();
+    requestAnimationFrame(() => {
+      cropCtx.drawImage(imgObj.imageElement, 0, 0);
+      points = [
+        {x: imgObj.width * 0.1, y: imgObj.height * 0.1},
+        {x: imgObj.width * 0.9, y: imgObj.height * 0.1},
+        {x: imgObj.width * 0.9, y: imgObj.height * 0.9},
+        {x: imgObj.width * 0.1, y: imgObj.height * 0.9}
+      ];
+      drawCropOverlay();
+    });
+  }
+
+  function drawCropOverlay(){
+    const imgObj = capturedImages[croppingIndex];
+    cropCtx.clearRect(0,0,cropCanvas.width,cropCanvas.height);
+    cropCtx.drawImage(imgObj.imageElement, 0, 0);
+
+    const rect = cropCanvas.getBoundingClientRect();
+    const scale = rect.width > 0 ? (cropCanvas.width / rect.width) : 1;
+    const handleR = Math.max(14, 18 * scale);
+    const lineW   = Math.max(2, 2 * scale);
+
+    cropCtx.strokeStyle = "red";
+    cropCtx.lineWidth = lineW;
+    cropCtx.beginPath();
+    cropCtx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) cropCtx.lineTo(points[i].x, points[i].y);
+    cropCtx.closePath();
+    cropCtx.stroke();
+
+    cropCtx.fillStyle = "yellow";
+    cropCtx.strokeStyle = "#333";
+    cropCtx.lineWidth = lineW;
+    points.forEach(p => {
+      cropCtx.beginPath();
+      cropCtx.arc(p.x, p.y, handleR, 0, 2 * Math.PI);
+      cropCtx.fill();
+      cropCtx.stroke();
+    });
+  }
+
+  function getCanvasCoordsFromPointer(e){
+    const rect = cropCanvas.getBoundingClientRect();
+    const scaleX = rect.width  > 0 ? (cropCanvas.width  / rect.width)  : 1;
+    const scaleY = rect.height > 0 ? (cropCanvas.height / rect.height) : 1;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
+  cropCanvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const { x, y } = getCanvasCoordsFromPointer(e);
+    draggingPoint = null;
+    const rect = cropCanvas.getBoundingClientRect();
+    const scale = rect.width > 0 ? (cropCanvas.width / rect.width) : 1;
+    const hitR  = Math.max(18, 18 * scale);
+    points.forEach((p, idx) => { if (Math.hypot(p.x-x, p.y-y) <= hitR) draggingPoint = idx; });
+    if (draggingPoint !== null) cropCanvas.setPointerCapture?.(e.pointerId);
+  });
+  cropCanvas.addEventListener('pointermove', (e) => {
+    if (draggingPoint === null) return;
+    e.preventDefault();
+    const { x, y } = getCanvasCoordsFromPointer(e);
+    points[draggingPoint].x = x; points[draggingPoint].y = y;
+    drawCropOverlay();
+  });
+  function endDrag(e){
+    if (draggingPoint !== null) { try { cropCanvas.releasePointerCapture?.(e.pointerId); } catch {} }
+    draggingPoint = null;
+  }
+  cropCanvas.addEventListener('pointerup', endDrag);
+  cropCanvas.addEventListener('pointercancel', endDrag);
+
+  applyCropBtn.onclick = () => {
+    const imgObj = capturedImages[croppingIndex];
+    const hi = (qualitySelect.value !== 'standard');
+    let dstW, dstH;
+    if (!hi) { dstW = 850; dstH = 1100; }
+    else {
+      dstW = Math.round(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+      dstH = Math.round(Math.hypot(points[3].x - points[0].x, points[3].y - points[0].y));
+    }
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      points[0].x, points[0].y, points[1].x, points[1].y,
+      points[2].x, points[2].y, points[3].x, points[3].y
+    ]);
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [ 0, 0, dstW-1, 0, dstW-1, dstH-1, 0, dstH-1 ]);
+    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+    const srcMat = cv.imread(imgObj.imageElement);
+    const dst = new cv.Mat();
+    cv.warpPerspective(srcMat, dst, M, new cv.Size(dstW, dstH));
+
+    const out = document.createElement('canvas');
+    out.width = dstW; out.height = dstH;
+    cv.imshow(out, dst);
+
+    imgObj.data = out.toDataURL('image/jpeg', 1.0);
+    imgObj.width = dstW; imgObj.height = dstH;
+    imgObj.imageElement = new Image();
+    imgObj.imageElement.src = imgObj.data;
+    imgObj.imageElement.onload = renderThumbnails;
+
+    srcTri.delete(); dstTri.delete(); M.delete(); srcMat.delete(); dst.delete();
+    cropModal.style.display = "none";
+  };
+  cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
+
+  // ===== PDF =====
+  downloadBtn.onclick = () => {
+    if (!capturedImages.length) { alert("No pages captured!"); return; }
+    const { jsPDF } = window.jspdf;
+    let pdf = null;
+    capturedImages.forEach((img, index) => {
+      if (index === 0) {
+        pdf = new jsPDF({
+          orientation: img.width > img.height ? "landscape" : "portrait",
+          unit: "px",
+          format: [img.width, img.height]
+        });
+      } else {
+        pdf.addPage([img.width, img.height], img.width > img.height ? "landscape" : "portrait");
+      }
+      pdf.addImage(img.data, 'JPEG', 0, 0, img.width, img.height);
+    });
+    pdf.save("scan.pdf");
+  };
+
+  // Try to autostart on desktop; iOS will need the button
+  window.addEventListener('load', () => {
+    startCamera().catch(err => { status('Autostart failed: ' + err.message); });
+  });
+})();
 </script>
 
 </body>
