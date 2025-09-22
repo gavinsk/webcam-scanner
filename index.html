@@ -103,6 +103,22 @@ const CSS_HANDLE_RADIUS = 18;
 
   const capturedImages = [];
 
+  // Ensure the crop canvas has a visible CSS size before measuring clientWidth/Height
+  function ensureCropCanvasCssSize(){
+    const rect = cropCanvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      cropCanvas.style.maxWidth = "95vw";
+      cropCanvas.style.width = Math.floor(window.innerWidth * 0.9) + "px";
+      cropCanvas.style.height = "auto";
+    }
+  }
+  window.addEventListener('resize', () => {
+    if (cropModal.style.display === "flex") {
+      ensureCropCanvasCssSize();
+      drawCropOverlay();
+    }
+  });
+
   function setDiag(text) { diag.textContent = text; }
 
   // --- Responsive preview (preserve aspect) ---
@@ -266,6 +282,31 @@ const CSS_HANDLE_RADIUS = 18;
     }
     croppingIndex = index;
     const imgObj = capturedImages[index];
+
+    // Set the internal canvas buffer to the image size first
+    cropCanvas.width = imgObj.width;
+    cropCanvas.height = imgObj.height;
+
+    // 1) Make modal visible so Safari performs layout
+    cropModal.style.display = "flex";
+
+    // 2) Ensure the canvas has a CSS size so clientWidth/Height are non-zero
+    ensureCropCanvasCssSize();
+
+    // 3) Draw on the next frame after layout
+    requestAnimationFrame(() => {
+      cropCtx.drawImage(imgObj.imageElement, 0, 0);
+      points = [
+        {x: imgObj.width * 0.1, y: imgObj.height * 0.1},
+        {x: imgObj.width * 0.9, y: imgObj.height * 0.1},
+        {x: imgObj.width * 0.9, y: imgObj.height * 0.9},
+        {x: imgObj.width * 0.1, y: imgObj.height * 0.9}
+      ];
+      drawCropOverlay();
+    });
+  }
+    croppingIndex = index;
+    const imgObj = capturedImages[index];
     cropCanvas.width = imgObj.width;
     cropCanvas.height = imgObj.height;
     cropCtx.drawImage(imgObj.imageElement, 0, 0);
@@ -286,10 +327,11 @@ const CSS_HANDLE_RADIUS = 18;
     cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
     cropCtx.drawImage(imgObj.imageElement, 0, 0);
 
-    // Scale-aware styling (CSS px -> canvas px)
-    const scale = cropCanvas.width / cropCanvas.clientWidth || 1;
-    const handleR = Math.max(14, CSS_HANDLE_RADIUS * scale);
-    const lineW  = Math.max(2, 2 * scale);
+    // Use client rect to compute scale; guard against zero in Safari pre-layout
+    const rect = cropCanvas.getBoundingClientRect();
+    const scale = rect.width > 0 ? (cropCanvas.width / rect.width) : 1;
+    const handleR = Math.max(14, 18 * scale);
+    const lineW   = Math.max(2, 2 * scale);
 
     // Outline
     cropCtx.strokeStyle = "red";
@@ -311,17 +353,18 @@ const CSS_HANDLE_RADIUS = 18;
       cropCtx.stroke();
     });
   });
+  });
   }
 
   function getCanvasCoordsFromPointer(e) {
     const rect = cropCanvas.getBoundingClientRect();
-    // Convert client (CSS) px to canvas px
-    const scaleX = cropCanvas.width  / rect.width;
-    const scaleY = cropCanvas.height / rect.height;
+    const scaleX = rect.width  > 0 ? (cropCanvas.width  / rect.width)  : 1;
+    const scaleY = rect.height > 0 ? (cropCanvas.height / rect.height) : 1;
     return {
       x: (e.clientX - rect.left) * scaleX,
       y: (e.clientY - rect.top)  * scaleY
     };
+  };
   };
   }
 
@@ -333,7 +376,8 @@ const CSS_HANDLE_RADIUS = 18;
       // Hit test using scaled radius in canvas pixels
     const scale = cropCanvas.width / cropCanvas.clientWidth || 1;
     const hitR  = Math.max(18, CSS_HANDLE_RADIUS * scale);
-    if (Math.hypot(p.x - x, p.y - y) <= hitR) draggingPoint = idx;
+    const rect = cropCanvas.getBoundingClientRect();
+    cons
     });
     if (draggingPoint !== null) cropCanvas.setPointerCapture?.(e.pointerId);
   });
