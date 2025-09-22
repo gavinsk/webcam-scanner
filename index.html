@@ -96,7 +96,8 @@
   let currentFacingMode = 'environment'; // prefer rear
   let camW = 1280, camH = 720; // updated by actual stream
   let draggingPoint = null;
-  const HANDLE_RADIUS = 18;
+  // Touch-friendly target size in CSS pixels; converted to canvas pixels dynamically
+const CSS_HANDLE_RADIUS = 18;
   let points = [];
   let croppingIndex = null;
 
@@ -281,26 +282,47 @@
 
   function drawCropOverlay(){
     const imgObj = capturedImages[croppingIndex];
+    // Clear and redraw image
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
     cropCtx.drawImage(imgObj.imageElement, 0, 0);
+
+    // Scale-aware styling (CSS px -> canvas px)
+    const scale = cropCanvas.width / cropCanvas.clientWidth || 1;
+    const handleR = Math.max(14, CSS_HANDLE_RADIUS * scale);
+    const lineW  = Math.max(2, 2 * scale);
+
+    // Outline
     cropCtx.strokeStyle = "red";
-    cropCtx.lineWidth = 2;
+    cropCtx.lineWidth = lineW;
     cropCtx.beginPath();
     cropCtx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) cropCtx.lineTo(points[i].x, points[i].y);
     cropCtx.closePath();
     cropCtx.stroke();
+
+    // Handles
     cropCtx.fillStyle = "yellow";
+    cropCtx.strokeStyle = "#333";
+    cropCtx.lineWidth = lineW;
     points.forEach(p => {
       cropCtx.beginPath();
-      cropCtx.arc(p.x, p.y, 10, 0, 2 * Math.PI);
+      cropCtx.arc(p.x, p.y, handleR, 0, 2 * Math.PI);
       cropCtx.fill();
       cropCtx.stroke();
     });
+  });
   }
 
   function getCanvasCoordsFromPointer(e) {
     const rect = cropCanvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // Convert client (CSS) px to canvas px
+    const scaleX = cropCanvas.width  / rect.width;
+    const scaleY = cropCanvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top)  * scaleY
+    };
+  };
   }
 
   cropCanvas.addEventListener('pointerdown', (e) => {
@@ -308,7 +330,10 @@
     const { x, y } = getCanvasCoordsFromPointer(e);
     draggingPoint = null;
     points.forEach((p, idx) => {
-      if (Math.hypot(p.x - x, p.y - y) <= HANDLE_RADIUS) draggingPoint = idx;
+      // Hit test using scaled radius in canvas pixels
+    const scale = cropCanvas.width / cropCanvas.clientWidth || 1;
+    const hitR  = Math.max(18, CSS_HANDLE_RADIUS * scale);
+    if (Math.hypot(p.x - x, p.y - y) <= hitR) draggingPoint = idx;
     });
     if (draggingPoint !== null) cropCanvas.setPointerCapture?.(e.pointerId);
   });
