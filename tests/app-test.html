@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Scanner App Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #fff; color: #111; }
+  iframe { width: 100%; height: 700px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<h1>Scanner app test</h1>
+<p>Drives the real scanner page in a frame: start camera, capture, wait for checks, rotate, crop, download.
+Run Chrome with <code>--use-fake-device-for-media-stream --use-fake-ui-for-media-stream</code> to use a fake camera.</p>
+<pre id="log"></pre>
+<iframe id="app" src="../index.html?debug"></iframe>
+<script>
+const log = [];
+function note(msg) { log.push(msg); document.getElementById('log').textContent = log.join('\n'); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 60000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await sleep(200); }
+  throw new Error('timed out waiting');
+}
+
+document.getElementById('app').onload = async () => {
+  const w = document.getElementById('app').contentWindow, d = w.document;
+  const errors = [];
+  w.addEventListener('error', e => errors.push(String(e.message)));
+  let confirmMsg = null;
+  w.confirm = m => { confirmMsg = m; return true; };
+  w.alert = m => errors.push('alert: ' + m);
+  const statusText = () => [...d.querySelectorAll('.thumb-container')].map(c =>
+    [...c.querySelectorAll('.page-label, .status')].map(s => s.textContent).join(' | '));
+
+  try {
+    d.getElementById('startBtn').click();
+    await until(() => d.getElementById('video').videoWidth > 0);
+    note('camera: ' + d.getElementById('diag').textContent);
+
+    d.getElementById('captureBtn').click();
+    await until(() => d.querySelectorAll('.thumb-container').length === 1);
+    note('right after capture: ' + statusText()[0]);
+    note('notice: ' + d.getElementById('notice').textContent);
+
+    await until(() => !statusText()[0].includes('Checking'));
+    note('after orientation check: ' + statusText()[0]);
+
+    const btn = label => [...d.querySelectorAll('.thumb-container button')].find(b => b.textContent.includes(label));
+    const img0 = () => d.querySelector('.thumb-container img');
+    const before = [img0().naturalWidth, img0().naturalHeight];
+    btn('Rotate').click();
+    await until(() => img0() && img0().naturalWidth === before[1] && img0().naturalHeight === before[0]);
+    note(`rotate: ${before.join('×')} -> ${img0().naturalWidth}×${img0().naturalHeight}`);
+
+    await until(() => w.cvReady, 90000);
+    btn('Crop').click();
+    await until(() => d.getElementById('cropModal').style.display === 'flex');
+    await sleep(300);
+    d.getElementById('applyCrop').click();
+    await until(() => d.getElementById('cropModal').style.display === 'none');
+    await sleep(500);
+    note(`after crop: ${img0().naturalWidth}×${img0().naturalHeight} | ${statusText()[0]}`);
+
+    d.getElementById('downloadBtn').click();
+    await sleep(500);
+    note('download confirm: ' + (confirmMsg === null ? '(none — no issues)' : JSON.stringify(confirmMsg)));
+    note('errors: ' + (errors.length ? errors.join('; ') : 'none'));
+    note(errors.length ? 'RESULT FAIL' : 'RESULT PASS');
+  } catch (err) {
+    note('ERROR ' + err + ' | errors: ' + errors.join('; '));
+    note('RESULT FAIL');
+  }
+  if (location.search.includes('report')) fetch('/results', { method: 'POST', body: JSON.stringify({ log }) });
+};
+</script>
+</body>
+</html>

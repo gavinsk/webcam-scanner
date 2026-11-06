@@ -12,8 +12,15 @@
   button, select { margin: 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
   #diag { font-size: 12px; color: #333; margin-top: 6px; min-height: 1.2em; }
 
-  .thumb-container { display: inline-block; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; }
-  .thumb-container img { display: block; height: 120px; margin-bottom: 5px; border: 1px solid #ccc; cursor: pointer; }
+  .thumb-container { display: inline-block; vertical-align: top; text-align: center; margin: 5px; background: white; padding: 5px; border-radius: 4px; max-width: 260px; }
+  .thumb-container img { display: block; height: 120px; margin: 0 auto 5px; border: 1px solid #ccc; cursor: pointer; }
+  .page-label { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .status { font-size: 12px; margin: 2px 0; }
+  .status.good { color: #1a7f37; }
+  .status.warn { color: #b42318; font-weight: 600; }
+  .status.muted { color: #666; }
+  .status.debug { color: #888; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  #notice { font-size: 14px; color: #b42318; font-weight: 600; min-height: 1.2em; margin-top: 4px; }
 
   #cropModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); flex-direction: column; align-items: center; justify-content: flex-start; overflow: auto; padding: 20px; z-index: 2000; }
   #cropCanvas { background: white; cursor: crosshair; max-width: 95%; height: auto; touch-action: none; }
@@ -43,6 +50,7 @@
   <button id="downloadBtn">💾 Download PDF</button>
   <button id="flipBtn" style="display:none;">🔄 Flip Camera</button>
   <div id="diag"></div>
+  <div id="notice"></div>
 </div>
 
 <div id="thumbnails"></div>
@@ -64,6 +72,8 @@
 
 <script async src="https://docs.opencv.org/4.x/opencv.js" onload="cv['onRuntimeInitialized']=()=>{window.cvReady=true;}"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="checks.js"></script>
 
 <script>
 (async function(){
@@ -94,8 +104,76 @@
   let points = [];
   let croppingIndex = null;
   const capturedImages = [];
+  const notice = document.getElementById('notice');
+  const DEBUG = new URLSearchParams(location.search).has('debug');
 
   function setDiag(text) { diag.textContent = text; }
+  function setNotice(text) { notice.textContent = text; }
+
+  // Load an image object's data URL into a fresh <img>, resolving when ready.
+  function loadImage(imgObj, dataUrl, w, h) {
+    return new Promise(res => {
+      const img = new Image();
+      img.onload = () => { imgObj.data = dataUrl; imgObj.width = w; imgObj.height = h; imgObj.imageElement = img; res(); };
+      img.src = dataUrl;
+    });
+  }
+
+  // Rotate a captured page clockwise by deg (90/180/270).
+  // imgObj.rotation tracks total rotation since capture, so orientation results stay valid.
+  async function rotateImage(imgObj, deg) {
+    const c = ScanChecks.rotateToCanvas(imgObj.imageElement, imgObj.width, imgObj.height, deg);
+    await loadImage(imgObj, c.toDataURL('image/jpeg', 1.0), c.width, c.height);
+    imgObj.rotation = (imgObj.rotation + deg) % 360;
+  }
+
+  // Degrees still needed to make the page upright, or null if unknown.
+  function rotationStillNeeded(imgObj) {
+    if (imgObj.orient.state !== 'ok') return null;
+    return (imgObj.orient.target - imgObj.rotation + 360) % 360;
+  }
+
+  async function runOrientationCheck(imgObj) {
+    const rotAtStart = imgObj.rotation;
+    const result = await ScanChecks.detectOrientation(imgObj.imageElement, imgObj.width, imgObj.height);
+    if (!capturedImages.includes(imgObj)) return; // deleted while checking
+    imgObj.orient = { state: result.status, scores: result.scores };
+    if (result.status === 'ok') {
+      imgObj.orient.target = (rotAtStart + result.rotation) % 360;
+      const needed = rotationStillNeeded(imgObj);
+      const userTouched = imgObj.rotation !== rotAtStart;
+      const beingCropped = cropModal.style.display === 'flex' && capturedImages[croppingIndex] === imgObj;
+      if (needed && !userTouched && !beingCropped) {
+        await rotateImage(imgObj, needed);
+        imgObj.autoRotated = true;
+      }
+    }
+    renderThumbnails();
+  }
+
+  function statusLines(imgObj) {
+    const lines = [];
+    const q = imgObj.quality;
+    if (q) {
+      if (q.ok) lines.push(['good', '✓ Sharp and well lit']);
+      else lines.push(['warn', '⚠ ' + q.problems.join(', ') + ' — retake?']);
+    }
+    const o = imgObj.orient;
+    if (o.state === 'checking') lines.push(['muted', '⏳ Checking orientation…']);
+    else if (o.state === 'ok') {
+      const needed = rotationStillNeeded(imgObj);
+      if (needed === 0) lines.push(['good', imgObj.autoRotated ? '✓ Upright (auto-rotated)' : '✓ Upright']);
+      else if (needed === 180) lines.push(['warn', '⚠ Looks upside down — use Rotate']);
+      else lines.push(['warn', '⚠ Looks sideways — use Rotate']);
+    }
+    else if (o.state === 'unknown') lines.push(['muted', '? Couldn’t check orientation (no printed text found)']);
+    else if (o.state === 'unavailable') lines.push(['muted', 'Orientation check unavailable']);
+    if (DEBUG) {
+      if (q) lines.push(['debug', `sharp ${q.sharpness} · bright ${q.brightness} · contrast ${q.contrast}`]);
+      if (o.scores) lines.push(['debug', 'words ' + Object.entries(o.scores).map(([d, s]) => `${d}°:${s}`).join(' ')]);
+    }
+    return lines;
+  }
 
   // --- Responsive preview (preserve aspect) ---
   function resizePreview() {
@@ -160,7 +238,7 @@
   }
 
   // Do NOT autostart; Safari/iFrames often require a user gesture.
-  startBtn.onclick = () => startCamera();
+  startBtn.onclick = () => { ScanChecks.warmUp(); startCamera(); };
   flipBtn.onclick = async () => { currentFacingMode = (currentFacingMode==='environment') ? 'user' : 'environment'; await startCamera(currentFacingMode); };
 
   // ENTER to capture
@@ -171,24 +249,24 @@
     capturedImages.forEach((imgObj, index) => {
       const container = document.createElement('div');
       container.className = "thumb-container";
+      const label = document.createElement('div');
+      label.className = 'page-label';
+      label.textContent = `Page ${index + 1}`;
+      container.appendChild(label);
       const img = document.createElement('img');
       img.src = imgObj.data; img.onclick = () => openPreview(imgObj.data);
       container.appendChild(img);
 
+      statusLines(imgObj).forEach(([cls, text]) => {
+        const s = document.createElement('div');
+        s.className = 'status ' + cls;
+        s.textContent = text;
+        container.appendChild(s);
+      });
+
       const rotateBtn = document.createElement('button');
       rotateBtn.textContent = "🔄 Rotate";
-      rotateBtn.onclick = () => {
-        const tmp = document.createElement('canvas');
-        const ctx = tmp.getContext('2d');
-        tmp.width = imgObj.height; tmp.height = imgObj.width;
-        ctx.translate(tmp.width/2, tmp.height/2);
-        ctx.rotate(Math.PI/2);
-        ctx.drawImage(imgObj.imageElement, -imgObj.width/2, -imgObj.height/2);
-        imgObj.data = tmp.toDataURL('image/jpeg', 1.0);
-        imgObj.width = tmp.width; imgObj.height = tmp.height;
-        imgObj.imageElement = new Image(); imgObj.imageElement.src = imgObj.data;
-        imgObj.imageElement.onload = renderThumbnails;
-      };
+      rotateBtn.onclick = async () => { await rotateImage(imgObj, 90); imgObj.autoRotated = false; renderThumbnails(); };
       container.appendChild(rotateBtn);
 
       const cropBtn = document.createElement('button');
@@ -217,9 +295,18 @@
     const out = document.createElement('canvas'); out.width = targetW; out.height = targetH;
     out.getContext('2d').drawImage(c, 0, 0, targetW, targetH);
 
+    const quality = ScanChecks.measureQuality(c, c.width, c.height);
+    setNotice(quality.ok ? '' : `Page ${capturedImages.length + 1} looks ${quality.problems.join(' and ')}. Consider retaking it.`);
+
     const data = out.toDataURL('image/jpeg', 1.0);
     const img = new Image(); img.src = data;
-    img.onload = () => { capturedImages.push({ data, width: out.width, height: out.height, imageElement: img }); renderThumbnails(); };
+    img.onload = () => {
+      const imgObj = { data, width: out.width, height: out.height, imageElement: img,
+                       rotation: 0, quality, orient: { state: 'checking' }, autoRotated: false };
+      capturedImages.push(imgObj);
+      renderThumbnails();
+      runOrientationCheck(imgObj);
+    };
   };
 
   // ===== Crop (layout-first + scale-aware) =====
@@ -321,19 +408,29 @@
     cv.warpPerspective(srcMat, dst, M, new cv.Size(dstW, dstH));
 
     const out = document.createElement('canvas'); out.width = dstW; out.height = dstH; cv.imshow(out, dst);
-
-    imgObj.data = out.toDataURL('image/jpeg', 1.0);
-    imgObj.width = dstW; imgObj.height = dstH;
-    imgObj.imageElement = new Image(); imgObj.imageElement.src = imgObj.data;
-    imgObj.imageElement.onload = renderThumbnails;
-
     srcTri.delete(); dstTri.delete(); M.delete(); srcMat.delete(); dst.delete();
     cropModal.style.display = "none";
+
+    // Re-check quality on the cropped page (the desk/background no longer skews it).
+    imgObj.quality = ScanChecks.measureQuality(out, dstW, dstH);
+    loadImage(imgObj, out.toDataURL('image/jpeg', 1.0), dstW, dstH).then(renderThumbnails);
   };
   cancelCropBtn.onclick = () => { cropModal.style.display = "none"; };
 
   downloadBtn.onclick = () => {
     if (!capturedImages.length) { alert("No pages captured!"); return; }
+
+    const issues = [];
+    capturedImages.forEach((img, i) => {
+      const p = `Page ${i + 1}`;
+      if (img.quality && !img.quality.ok) issues.push(`${p}: ${img.quality.problems.join(', ')}`);
+      if (img.orient.state === 'checking') issues.push(`${p}: still checking orientation`);
+      const needed = rotationStillNeeded(img);
+      if (needed === 180) issues.push(`${p}: looks upside down`);
+      else if (needed) issues.push(`${p}: looks sideways`);
+    });
+    if (issues.length && !confirm("Some pages may have problems:\n\n" + issues.join('\n') + "\n\nDownload anyway?")) return;
+
     const { jsPDF } = window.jspdf; let pdf = null;
     capturedImages.forEach((img, index) => {
       if (index === 0) {

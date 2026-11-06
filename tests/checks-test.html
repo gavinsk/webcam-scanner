@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Scanner Checks Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #fff; color: #111; }
+  table { border-collapse: collapse; margin-top: 10px; }
+  td, th { border: 1px solid #ccc; padding: 4px 8px; font-size: 13px; text-align: left; }
+  .pass { color: #1a7f37; font-weight: 600; } .fail { color: #b42318; font-weight: 600; }
+  canvas { height: 120px; border: 1px solid #ccc; margin: 4px; }
+</style>
+</head>
+<body>
+<h1>Scanner checks test</h1>
+<p>Generates synthetic scans and runs the quality and orientation checks on them.</p>
+<div id="summary">Running…</div>
+<table id="results"><tr><th>Case</th><th>Expected</th><th>Got</th><th>Details</th><th>Result</th></tr></table>
+<div id="samples"></div>
+<pre id="json"></pre>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="../checks.js"></script>
+<script>
+// Deterministic random numbers so runs are repeatable.
+let seed = 12345;
+function rand() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+
+// A portrait worksheet: printed header and instructions, then "handwritten" scribbles.
+function makePage({ printed = true } = {}) {
+  const c = document.createElement('canvas'); c.width = 850; c.height = 1100;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f7f5ef'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#111';
+  let y = 70;
+  if (printed) {
+    ctx.font = 'bold 34px Arial'; ctx.fillText('Unit 4 Homework: Linear Equations', 50, y); y += 50;
+    ctx.font = '26px Arial';
+    ctx.fillText('Name: ____________________   Date: __________', 50, y); y += 45;
+    for (const line of ['Solve each equation below. Show all of your work', 'and check your answer by substitution. Circle', 'your final answer for each problem.']) {
+      ctx.fillText(line, 50, y); y += 36;
+    }
+    y += 20;
+  }
+  // Scribbles that look roughly like handwriting lines.
+  ctx.strokeStyle = '#1b2a6b'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  for (; y < 1050; y += 55) {
+    let x = 60; ctx.beginPath(); ctx.moveTo(x, y);
+    while (x < 760) {
+      const nx = x + 8 + rand() * 14;
+      ctx.quadraticCurveTo((x + nx) / 2, y - 18 - rand() * 14, nx, y + rand() * 6 - 3);
+      x = nx;
+      if (rand() < 0.08) { x += 25; ctx.moveTo(x, y); }
+    }
+    ctx.stroke();
+  }
+  return c;
+}
+
+// Place the page on a 1280×720 "desk", rotated clockwise by deg, like a laptop webcam frame.
+function makeCapture(page, deg, { blur = 0, darken = 1, noise = 6 } = {}) {
+  const c = document.createElement('canvas'); c.width = 1280; c.height = 720;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#6b5a45'; ctx.fillRect(0, 0, c.width, c.height);
+  const swap = deg % 180 !== 0;
+  const fitH = 690, s = swap ? fitH / page.width : fitH / page.height;
+  ctx.save();
+  if (blur) ctx.filter = `blur(${blur}px)`;
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate(deg * Math.PI / 180);
+  ctx.drawImage(page, -page.width * s / 2, -page.height * s / 2, page.width * s, page.height * s);
+  ctx.restore();
+  // Webcam-style sensor noise and exposure.
+  const im = ctx.getImageData(0, 0, c.width, c.height), d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (rand() - 0.5) * 2 * noise;
+    for (let k = 0; k < 3; k++) d[i + k] = Math.max(0, Math.min(255, d[i + k] * darken + n));
+  }
+  ctx.putImageData(im, 0, 0);
+  return c;
+}
+
+const rows = [];
+function report(name, expected, got, details, pass) {
+  rows.push({ name, expected, got, details, pass });
+  const tr = document.createElement('tr');
+  for (const v of [name, expected, got, details]) { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); }
+  const td = document.createElement('td'); td.textContent = pass ? 'PASS' : 'FAIL'; td.className = pass ? 'pass' : 'fail'; tr.appendChild(td);
+  document.getElementById('results').appendChild(tr);
+}
+function show(c) { const k = document.createElement('canvas'); k.width = c.width; k.height = c.height; k.getContext('2d').drawImage(c, 0, 0); document.getElementById('samples').appendChild(k); }
+
+(async () => {
+  const page = makePage();
+
+  // --- Quality ---
+  const qualityCases = [
+    ['sharp', {}, true],
+    ['sharp, grainy', { noise: 15 }, true],
+    ['slightly soft (1px)', { blur: 1 }, null],
+    ['blurry (2px)', { blur: 2 }, false],
+    ['blurry (3px)', { blur: 3 }, false],
+    ['blurry + grainy', { blur: 3, noise: 15 }, false],
+    ['very blurry (6px)', { blur: 6 }, false],
+    ['dark', { darken: 0.3 }, false],
+  ];
+  for (const [name, opts, expectOk] of qualityCases) {
+    const cap = makeCapture(page, 90, opts); show(cap);
+    const q = ScanChecks.measureQuality(cap, cap.width, cap.height);
+    // expectOk === null means "borderline, just report the numbers".
+    report('Quality: ' + name, expectOk === null ? 'either' : expectOk ? 'ok' : 'problem', q.ok ? 'ok' : q.problems.join(', '),
+           `sharp ${q.sharpness}, bright ${q.brightness}, contrast ${q.contrast}`, expectOk === null || q.ok === expectOk);
+  }
+
+  // --- Orientation ---
+  for (const deg of [90, 270, 0, 180]) {
+    const cap = makeCapture(page, deg); show(cap);
+    const expected = (360 - deg) % 360;
+    const t0 = performance.now();
+    const r = await ScanChecks.detectOrientation(cap, cap.width, cap.height);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    const got = r.status === 'ok' ? `rotate ${r.rotation}°` : r.status;
+    report(`Orientation: page turned ${deg}°`, `rotate ${expected}°`, got,
+           `${secs}s, words ${JSON.stringify(r.scores || r.error)}`, r.status === 'ok' && r.rotation === expected);
+  }
+
+  // Handwriting only: should say it can't tell, rather than guess.
+  {
+    const cap = makeCapture(makePage({ printed: false }), 90); show(cap);
+    const t0 = performance.now();
+    const r = await ScanChecks.detectOrientation(cap, cap.width, cap.height);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    report('Orientation: handwriting only', 'unknown', r.status === 'ok' ? `rotate ${r.rotation}°` : r.status,
+           `${secs}s, words ${JSON.stringify(r.scores || r.error)}`, r.status === 'unknown');
+  }
+
+  const passed = rows.filter(r => r.pass).length;
+  document.getElementById('summary').textContent = `${passed}/${rows.length} passed`;
+  document.getElementById('json').textContent = 'RESULTS ' + JSON.stringify(rows);
+  document.title = 'DONE';
+  if (location.search.includes('report')) fetch('/results', { method: 'POST', body: JSON.stringify(rows) });
+})().catch(err => {
+  document.getElementById('summary').textContent = 'ERROR ' + err; document.title = 'DONE';
+  if (location.search.includes('report')) fetch('/results', { method: 'POST', body: JSON.stringify({ error: String(err) }) });
+});
+</script>
+</body>
+</html>

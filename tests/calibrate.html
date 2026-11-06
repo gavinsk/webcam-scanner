@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Scanner Check Calibration</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #fff; color: #111; }
+  #drop { border: 2px dashed #999; border-radius: 8px; padding: 24px; text-align: center; margin: 12px 0; }
+  #drop.over { background: #eef5ff; border-color: #2b6cb0; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border: 1px solid #ddd; padding: 6px; font-size: 13px; text-align: left; vertical-align: top; }
+  td img { height: 110px; border: 1px solid #ccc; }
+  .good { color: #1a7f37; } .warn { color: #b42318; font-weight: 600; } .muted { color: #666; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Scanner check calibration</h1>
+<p>Drop scanner PDFs (made by this scanner) or page images here to see what the quality and orientation
+checks measure for each page. Everything runs in this browser; nothing is uploaded.
+Current thresholds are in <code>checks.js</code> → <code>CONFIG</code>.</p>
+<div id="drop">Drop files here, or <input type="file" id="pick" multiple accept=".pdf,image/*"></div>
+<div id="summary"></div>
+<table id="results"><thead><tr><th>Page</th><th>File</th><th>Size</th><th>Quality</th><th>Orientation</th></tr></thead><tbody></tbody></table>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="../checks.js"></script>
+<script>
+const rows = [];
+const tbody = document.querySelector('#results tbody');
+
+// jsPDF stores each page as a JPEG (DCTDecode stream). Pull those out without a PDF library.
+function extractJpegs(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = ''; for (let i = 0; i < bytes.length; i += 65536) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 65536));
+  const out = [];
+  let at = 0;
+  while ((at = s.indexOf('/DCTDecode', at)) >= 0) {
+    let st = s.indexOf('stream', at); if (st < 0) break;
+    st += 6; while (s[st] === '\r' || s[st] === '\n') st++;
+    let en = s.indexOf('endstream', st); if (en < 0) break;
+    while (s[en - 1] === '\r' || s[en - 1] === '\n') en--;
+    if (bytes[st] === 0xFF && bytes[st + 1] === 0xD8) out.push(new Blob([bytes.subarray(st, en)], { type: 'image/jpeg' }));
+    at = en;
+  }
+  return out;
+}
+
+function loadImg(blob) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(blob); });
+}
+
+// ?turn=90 rotates each sample clockwise first (simulating a sideways webcam capture of a
+// correctly submitted page), so the right answer is known: rotate back by 360 - turn.
+const TURN = Number(new URLSearchParams(location.search).get('turn') || 0);
+
+async function processBlob(name, page, blob) {
+  const loaded = await loadImg(blob);
+  const img = TURN ? ScanChecks.rotateToCanvas(loaded, loaded.naturalWidth, loaded.naturalHeight, TURN) : loaded;
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  if (TURN) { img.style.height = '110px'; }
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td></td><td></td><td>${w}×${h}</td><td></td><td class="muted">checking…</td>`;
+  tr.children[0].appendChild(img); tr.children[1].textContent = `${name} (p${page})`;
+  tbody.appendChild(tr);
+
+  const q = ScanChecks.measureQuality(img, w, h);
+  tr.children[3].innerHTML = `<div class="${q.ok ? 'good' : 'warn'}">${q.ok ? '✓ ok' : '⚠ ' + q.problems.join(', ')}</div>
+    <div class="muted">sharp ${q.sharpness} · bright ${q.brightness} · contrast ${q.contrast}</div>`;
+
+  const t0 = performance.now();
+  const o = await ScanChecks.detectOrientation(img, w, h);
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  const expected = (360 - TURN) % 360;
+  const verdict = o.status !== 'ok' ? `<span class="muted">${o.status}</span>`
+    : o.rotation === expected ? `<span class="good">✓ ${TURN ? 'correct: rotate ' + o.rotation + '°' : 'upright'}</span>`
+    : `<span class="warn">⚠ says rotate ${o.rotation}°${TURN ? ' (wrong, should be ' + expected + '°)' : ''}</span>`;
+  const best = o.found ? Object.entries(o.found).map(([d, f]) => f.length ? `${d}°: ${f.slice(0, 8).join(' ')}` : '').filter(Boolean).join(' | ') : '';
+  tr.children[4].innerHTML = `${verdict}<div class="muted">score ${Object.entries(o.scores || {}).map(([d, s]) => `${d}°:${s}`).join(' ')} · ${secs}s</div><div class="muted"></div>`;
+  tr.children[4].lastChild.textContent = best;
+  rows.push({ file: name, page, w, h, quality: q, orient: { status: o.status, rotation: o.rotation, scores: o.scores, found: o.found }, expected, secs: Number(secs) });
+}
+
+async function processFile(name, blob) {
+  try {
+    if (/\.pdf$/i.test(name)) {
+      const pages = extractJpegs(await blob.arrayBuffer());
+      if (!pages.length) { const tr = document.createElement('tr'); tr.innerHTML = `<td></td><td></td><td colspan="3" class="muted">no scanner images found in this PDF</td>`; tr.children[1].textContent = name; tbody.appendChild(tr); }
+      for (let i = 0; i < pages.length; i++) await processBlob(name, i + 1, pages[i]);
+    } else {
+      await processBlob(name, 1, blob);
+    }
+  } catch (err) { rows.push({ file: name, error: String(err) }); }
+}
+
+async function processAll(items) {
+  document.getElementById('summary').textContent = 'Working…';
+  for (const [name, blob] of items) await processFile(name, blob);
+  const pages = rows.filter(r => r.quality);
+  const flaggedQ = pages.filter(r => !r.quality.ok).length;
+  const known = pages.filter(r => r.orient.status === 'ok');
+  const wrong = known.filter(r => r.orient.rotation !== r.expected).length;
+  document.getElementById('summary').textContent =
+    `${pages.length} pages · ${flaggedQ} flagged for quality · orientation decided for ${known.length} ` +
+    `(${TURN ? wrong + ' wrong' : wrong + ' not upright'}), undecided for ${pages.length - known.length}`;
+}
+
+const drop = document.getElementById('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); processAll([...e.dataTransfer.files].map(f => [f.name, f])); });
+document.getElementById('pick').addEventListener('change', e => processAll([...e.target.files].map(f => [f.name, f])));
+
+// Automation: ?dir=<folder served by a local web server> processes every PDF/image in its listing.
+const params = new URLSearchParams(location.search);
+if (params.has('dir')) (async () => {
+  const dir = params.get('dir').replace(/\/?$/, '/');
+  const html = await (await fetch(dir)).text();
+  const names = [...html.matchAll(/href="([^"]+)"/g)].map(m => decodeURIComponent(m[1])).filter(n => /\.(pdf|png|jpe?g)$/i.test(n));
+  const items = [];
+  for (const n of names) items.push([n, await (await fetch(dir + encodeURIComponent(n))).blob()]);
+  await processAll(items);
+  if (params.has('report')) fetch('/results', { method: 'POST', body: JSON.stringify(rows) });
+})();
+</script>
+</body>
+</html>
