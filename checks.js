@@ -87,7 +87,8 @@
 
     const problems = [];
     if (brightness < CONFIG.darkMax) problems.push('too dark');
-    else if (brightness > CONFIG.brightMin) problems.push('washed out');
+    // Very bright is only a problem if the writing is faint too (clean digital pages are near-white).
+    else if (brightness > CONFIG.brightMin && contrast < CONFIG.contrastMin + 10) problems.push('washed out');
     if (contrast < CONFIG.contrastMin) problems.push('faint (low contrast)');
     if (sharpness < CONFIG.blurMin) problems.push('blurry');
 

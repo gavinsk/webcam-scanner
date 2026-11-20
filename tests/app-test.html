@@ -66,6 +66,8 @@ document.getElementById('app').onload = async () => {
     d.getElementById('downloadBtn').click();
     await sleep(500);
     note('download confirm: ' + (confirmMsg === null ? '(none — no issues)' : JSON.stringify(confirmMsg)));
+    note('naming dialog opened: ' + d.getElementById('saveDialog').open);
+    if (!d.getElementById('saveDialog').open) errors.push('naming dialog did not open');
     note('errors: ' + (errors.length ? errors.join('; ') : 'none'));
     note(errors.length ? 'RESULT FAIL' : 'RESULT PASS');
   } catch (err) {

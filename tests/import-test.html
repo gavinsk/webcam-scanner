@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Scanner Import Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #fff; color: #111; }
+  iframe { width: 100%; height: 800px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<h1>Scanner import and reorder test</h1>
+<p>Drives the real scanner page in a frame: adds images by drag-and-drop and by the Add Images button,
+checks skipped files, then reorders pages with a touch-style drag.</p>
+<pre id="log"></pre>
+<iframe id="app" src="../index.html?debug"></iframe>
+<script>
+const log = [];
+let failed = false;
+function note(msg) { log.push(msg); document.getElementById('log').textContent = log.join('\n'); }
+function check(name, ok, detail = '') { if (!ok) failed = true; note(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 60000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await sleep(200); }
+  throw new Error('timed out waiting');
+}
+
+// A portrait page with a printed notebook-style header and a big letter so it's easy to spot.
+// Width + height is the page's ID (it doesn't change when the page is rotated).
+function makePage(letter, w, h, turn = 0) {
+  const p = document.createElement('canvas'); p.width = w; p.height = h;
+  const ctx = p.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#111';
+  ctx.font = 'bold 30px Arial'; ctx.fillText('TITLE: Keychain Design Project', 40, 60);
+  ctx.font = '26px Arial'; ctx.fillText('DESIGNED BY: __________   DATE: ______', 40, 110);
+  ctx.fillText('WITNESSED BY: __________   DATE: ______', 40, h - 50);
+  ctx.font = 'bold 300px Arial'; ctx.fillText(letter, w / 2 - 100, h / 2 + 100);
+  if (!turn) return p;
+  const c = document.createElement('canvas'); c.width = turn % 180 ? h : w; c.height = turn % 180 ? w : h;
+  const cx = c.getContext('2d'); cx.translate(c.width / 2, c.height / 2); cx.rotate(turn * Math.PI / 180); cx.drawImage(p, -w / 2, -h / 2);
+  return c;
+}
+const toFile = (w, canvas, name, type = 'image/png') =>
+  new Promise(res => canvas.toBlob(b => res(new w.File([b], name, { type })), type));
+
+document.getElementById('app').onload = async () => {
+  const w = document.getElementById('app').contentWindow, d = w.document;
+  const errors = [];
+  w.addEventListener('error', e => errors.push(String(e.message)));
+  w.addEventListener('unhandledrejection', e => errors.push('rejection: ' + e.reason));
+  const thumbs = () => [...d.querySelectorAll('.thumb-container')];
+  const ids = () => thumbs().map(t => { const i = t.querySelector('img'); return i.naturalWidth + i.naturalHeight; });
+  const labels = () => thumbs().map(t => t.querySelector('.page-label').textContent);
+  const NAME = { 1800: 'A', 1810: 'B', 1820: 'C', 1830: 'D', 4200: 'Big' };
+  const order = () => ids().map(i => NAME[i] || i).join(',');
+
+  try {
+    // 1. Drag-and-drop three image files onto the page.
+    const dt = new w.DataTransfer();
+    for (const [l, wd] of [['A', 800], ['B', 810], ['C', 820]]) dt.items.add(await toFile(w, makePage(l, wd, 1000), l + '.png'));
+    d.body.dispatchEvent(new w.DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+    check('drop overlay shows while dragging files', d.getElementById('dropOverlay').style.display === 'flex');
+    d.body.dispatchEvent(new w.DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    await until(() => thumbs().length === 3);
+    check('drop overlay hides after drop', d.getElementById('dropOverlay').style.display === 'none');
+    check('dropped 3 images become 3 pages in order', order() === 'A,B,C', order());
+    check('reorder hint shown', d.getElementById('pagesHint').textContent.includes('Drag'));
+
+    // 2. Add Images button (file picker): an upside-down page, a huge photo, a HEIC, and a text file.
+    const pick = new w.DataTransfer();
+    pick.items.add(await toFile(w, makePage('D', 830, 1000, 180), 'D-upside-down.png'));
+    const big = document.createElement('canvas'); big.width = 4000; big.height = 3000;
+    const bx = big.getContext('2d'); bx.fillStyle = '#ddd'; bx.fillRect(0, 0, 4000, 3000); bx.fillStyle = '#333'; bx.font = 'bold 400px Arial'; bx.fillText('BIG', 1500, 1700);
+    pick.items.add(await toFile(w, big, 'phone-photo.jpg', 'image/jpeg'));
+    pick.items.add(new w.File([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])], 'IMG_0001.HEIC', { type: 'image/heic' }));
+    pick.items.add(new w.File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    const input = d.getElementById('fileInput');
+    input.files = pick.files;
+    input.dispatchEvent(new w.Event('change'));
+    await until(() => thumbs().length === 5);
+    await sleep(300);
+    check('picker adds 2 valid images', order() === 'A,B,C,D,Big', order());
+    const notice = d.getElementById('notice').textContent;
+    check('HEIC skipped with export hint', notice.includes('IMG_0001.HEIC') && notice.includes('JPEG'), notice);
+    check('text file skipped', notice.includes('notes.txt'), notice);
+    const bigImg = thumbs()[4].querySelector('img');
+    check('huge photo downscaled to 2400 long edge', Math.max(bigImg.naturalWidth, bigImg.naturalHeight) === 2400, `${bigImg.naturalWidth}×${bigImg.naturalHeight}`);
+
+    // 3. Orientation check runs on imported pages; the upside-down one gets turned upright.
+    await until(() => !thumbs().some(t => t.textContent.includes('Checking')), 120000);
+    const dStatus = thumbs().find(t => { const i = t.querySelector('img'); return i.naturalWidth + i.naturalHeight === 1830; }).textContent;
+    check('upside-down import auto-rotated', dStatus.includes('auto-rotated'), dStatus.replace(/\s+/g, ' ').slice(0, 160));
+
+    // 4. Reorder with a touch-style drag (SortableJS fallback mode = the touchscreen code path):
+    //    drag page A onto page C's position.
+    const s = w.Sortable.get(d.getElementById('thumbnails'));
+    s.option('forceFallback', true);
+    const center = el => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+    const [sx, sy] = center(thumbs()[0].querySelector('.page-label'));
+    const [tx, ty] = center(thumbs()[2]);
+    const ev = (type, x, y, target) => (target || d).dispatchEvent(new w.PointerEvent(type,
+      { clientX: x, clientY: y, bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'touch' }));
+    ev('pointerdown', sx, sy, thumbs()[0].querySelector('.page-label'));
+    for (let i = 1; i <= 20; i++) { ev('pointermove', sx + (tx + 20 - sx) * i / 20, sy + (ty - sy) * i / 20); await sleep(30); }
+    ev('pointerup', tx + 20, ty);
+    await sleep(800);
+    check('drag reorders pages', order() === 'B,C,A,D,Big', order());
+    check('page labels renumbered', labels().join(',') === 'Page 1,Page 2,Page 3,Page 4,Page 5', labels().join(','));
+
+    // 5. Buttons still work after reordering: delete page 1 (B).
+    thumbs()[0].querySelectorAll('button')[2].click();
+    await sleep(300);
+    check('delete still targets the right page', order() === 'C,A,D,Big', order());
+
+    // 6. Download produces a PDF in the new order (check jsPDF page sizes).
+    let pdfSizes = null;
+    const realSave = w.jspdf.jsPDF.API.save;
+    w.jspdf.jsPDF.API.save = function () {
+      pdfSizes = [];
+      for (let i = 1; i <= this.getNumberOfPages(); i++) { const p = this.internal.pageSize; this.setPage(i); pdfSizes.push(Math.round(this.internal.pageSize.getWidth() + this.internal.pageSize.getHeight())); }
+    };
+    w.confirm = () => true;
+    d.getElementById('downloadBtn').click();
+    await until(() => d.getElementById('saveDialog').open, 10000);
+    d.getElementById('studentName').value = 'Test Student';
+    d.getElementById('saveForm').requestSubmit();
+    await until(() => pdfSizes, 10000);
+    w.jspdf.jsPDF.API.save = realSave;
+    check('PDF has pages in the new order', pdfSizes.join(',') === ids().join(','), `pdf ${pdfSizes.join(',')} vs pages ${ids().join(',')}`);
+
+    check('no JavaScript errors', errors.length === 0, errors.join('; '));
+  } catch (err) {
+    failed = true;
+    note('ERROR ' + err + ' | errors: ' + errors.join('; '));
+  }
+  note(failed ? 'RESULT FAIL' : 'RESULT PASS');
+  if (location.search.includes('report')) fetch('/results', { method: 'POST', body: JSON.stringify({ log }) });
+};
+</script>
+</body>
+</html>

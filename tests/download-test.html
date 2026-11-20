@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Scanner Download Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; background: #fff; color: #111; }
+  iframe { width: 100%; height: 700px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<h1>Scanner download flow test</h1>
+<p>Drives the real scanner page: page-count button, naming dialog, remembered name, Start New Scan,
+and the leave-page warning. Run in a fresh browser profile (it reads and writes the saved name).</p>
+<pre id="log"></pre>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+const log = [];
+let failed = false;
+function note(msg) { log.push(msg); document.getElementById('log').textContent = log.join('\n'); }
+function check(name, ok, detail = '') { if (!ok) failed = true; note(`${ok ? 'PASS' : 'FAIL'} ${name}${detail !== '' ? ' — ' + detail : ''}`); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 30000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await sleep(100); }
+  throw new Error('timed out waiting');
+}
+function pageFile(w, label) {
+  const c = document.createElement('canvas'); c.width = 600; c.height = 800;
+  const x = c.getContext('2d'); x.fillStyle = '#eee'; x.fillRect(0, 0, 600, 800); x.fillStyle = '#222'; x.font = 'bold 200px Arial'; x.fillText(label, 200, 450);
+  return new Promise(res => c.toBlob(b => res(new w.File([b], label + '.png', { type: 'image/png' })), 'image/png'));
+}
+
+document.getElementById('app').onload = async () => {
+  const w = document.getElementById('app').contentWindow, d = w.document;
+  const $ = id => d.getElementById(id);
+  const errors = [], alerts = [], confirms = [];
+  let confirmAnswer = true;
+  w.addEventListener('error', e => errors.push(String(e.message)));
+  w.alert = m => alerts.push(m);
+  w.confirm = m => { confirms.push(m); return confirmAnswer; };
+  const saved = [];
+  w.jspdf.jsPDF.API.save = function (name) { saved.push({ name, pages: this.getNumberOfPages() }); };
+  const pages = () => d.querySelectorAll('.thumb-container').length;
+  const addPages = async (...labels) => {
+    const dt = new w.DataTransfer();
+    for (const l of labels) dt.items.add(await pageFile(w, l));
+    const before = pages();
+    $('fileInput').files = dt.files; $('fileInput').dispatchEvent(new w.Event('change'));
+    await until(() => pages() === before + labels.length);
+  };
+  const leaveWarns = () => { const e = new w.Event('beforeunload', { cancelable: true }); w.dispatchEvent(e); return e.defaultPrevented; };
+  const type = (el, v) => { el.value = v; el.dispatchEvent(new w.Event('input')); };
+
+  try {
+    // Start: nothing to download.
+    check('Download disabled with no pages', $('downloadBtn').disabled);
+    check('Start New Scan hidden with no pages', $('newScanBtn').style.display === 'none');
+    check('no leave warning with no pages', !leaveWarns());
+
+    // Two pages: button shows count, new-scan button appears, leaving warns.
+    await addPages('A', 'B');
+    check('Download enabled with page count', !$('downloadBtn').disabled && $('downloadBtn').textContent.includes('(2 pages)'), $('downloadBtn').textContent);
+    check('Start New Scan visible', $('newScanBtn').style.display !== 'none');
+    check('leave warning with undownloaded pages', leaveWarns());
+
+    // Enter while a toolbar button has focus captures (not presses that button).
+    const enter = new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    $('startBtn').focus(); $('startBtn').dispatchEvent(enter);
+    check('Enter on focused Start button goes to capture', enter.defaultPrevented && alerts.at(-1) === 'Start the camera first.', alerts.at(-1));
+
+    // Download opens the naming dialog (empty the first time).
+    $('downloadBtn').click();
+    await until(() => $('saveDialog').open);
+    check('naming dialog opens', $('saveDialog').open);
+    check('name box focused first time', d.activeElement === $('studentName'));
+    check('default filename preview', $('filenamePreview').textContent === 'scan.pdf', $('filenamePreview').textContent);
+
+    // Enter inside the dialog must not trigger a capture.
+    const alertsBefore = alerts.length;
+    $('studentName').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    check('Enter in dialog does not capture', alerts.length === alertsBefore);
+
+    // Empty name can't be submitted.
+    $('saveForm').requestSubmit();
+    check('empty name blocks download', saved.length === 0 && $('saveDialog').open);
+
+    // Names with characters that are illegal in filenames get cleaned.
+    type($('studentName'), '  Jordan   Smith ');
+    type($('assignmentName'), '3.6/A?');
+    check('filename preview updates and is cleaned', $('filenamePreview').textContent === 'Jordan Smith - 3.6A.pdf', $('filenamePreview').textContent);
+    $('saveForm').requestSubmit();
+    await until(() => saved.length === 1);
+    check('PDF saved with chosen name', saved[0].name === 'Jordan Smith - 3.6A.pdf' && saved[0].pages === 2, JSON.stringify(saved[0]));
+    check('dialog closes after download', !$('saveDialog').open);
+    check('no leave warning after download', !leaveWarns());
+
+    // Second download: name remembered, cursor goes to assignment.
+    $('downloadBtn').click();
+    await until(() => $('saveDialog').open);
+    check('name and assignment remembered', $('studentName').value === 'Jordan Smith' && $('assignmentName').value === '3.6A');
+    check('assignment box focused when name known', d.activeElement === $('assignmentName'));
+    $('cancelSave').click();
+    check('Cancel closes without saving', !$('saveDialog').open && saved.length === 1);
+
+    // Start New Scan right after downloading: clears without asking.
+    const confirmsBefore = confirms.length;
+    $('newScanBtn').click();
+    check('new scan after download clears without asking', pages() === 0 && confirms.length === confirmsBefore);
+    check('Download disabled again', $('downloadBtn').disabled && $('newScanBtn').style.display === 'none');
+
+    // Start New Scan with undownloaded pages: asks first; "Cancel" keeps them.
+    await addPages('C');
+    check('button says 1 page', $('downloadBtn').textContent.includes('(1 page)'), $('downloadBtn').textContent);
+    confirmAnswer = false; $('newScanBtn').click();
+    check('new scan asks before clearing undownloaded pages', confirms.at(-1)?.includes("hasn't been downloaded") && pages() === 1, confirms.at(-1));
+    confirmAnswer = true; $('newScanBtn').click();
+    check('confirming clears the pages', pages() === 0 && !leaveWarns());
+
+    // Changing pages after a download counts as unsaved again (delete here).
+    await addPages('D', 'E');
+    $('downloadBtn').click(); await until(() => $('saveDialog').open); $('saveForm').requestSubmit();
+    await until(() => saved.length === 2);
+    check('second PDF uses remembered name', saved[1].name === 'Jordan Smith - 3.6A.pdf', saved[1].name);
+    d.querySelectorAll('.thumb-container')[0].querySelectorAll('button')[2].click();
+    check('editing after download warns again on leave', leaveWarns());
+
+    check('no JavaScript errors', errors.length === 0, errors.join('; '));
+  } catch (err) {
+    failed = true;
+    note('ERROR ' + err + ' | errors: ' + errors.join('; '));
+  }
+  note(failed ? 'RESULT FAIL' : 'RESULT PASS');
+  if (location.search.includes('report')) fetch('/results', { method: 'POST', body: JSON.stringify({ log }) });
+};
+</script>
+</body>
+</html>
